@@ -7,6 +7,8 @@ pub mod traits;
 pub mod window_controller;
 
 pub mod config;
+#[cfg(any(target_os = "macos", test))]
+pub mod downloads;
 #[cfg(debug_assertions)]
 pub mod diagnostics;
 pub mod i18n;

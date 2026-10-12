@@ -3,7 +3,9 @@ use crate::traits::PolicyEnforcer;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use tauri::webview::{DownloadEvent, NewWindowResponse, PageLoadEvent, Webview};
+#[cfg(not(target_os = "macos"))]
+use tauri::webview::DownloadEvent;
+use tauri::webview::{NewWindowResponse, PageLoadEvent, Webview};
 use tauri::{AppHandle, Manager, Runtime, Url, WebviewBuilder, WebviewUrl};
 
 // notion.so now redirects to the marketing site even with an existing session.
@@ -326,6 +328,8 @@ pub fn create_secure_webview_builder<R: Runtime>(
     let popup_window_id = window_id.to_string();
     let title_app = app.clone();
     let download_app = app.clone();
+    #[cfg(target_os = "macos")]
+    let downloads = crate::downloads::DownloadManager::default();
 
     webview_builder
         // WebKit asks this for main-frame *and* sub-frame navigations without
@@ -373,6 +377,12 @@ pub fn create_secure_webview_builder<R: Runtime>(
             crate::window_controller::tab_title_changed(&title_app, &webview, title);
         })
         .on_download(move |_webview, event| {
+            #[cfg(target_os = "macos")]
+            {
+                crate::downloads::handle_download(&download_app, &downloads, event)
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
             match event {
                 DownloadEvent::Requested { url, destination } => {
                     log::info!("Download requested: {} -> {}", url, destination.display());
@@ -394,6 +404,7 @@ pub fn create_secure_webview_builder<R: Runtime>(
                 _ => {}
             }
             true
+            }
         })
         .on_new_window(move |url, features| {
             let url_str = url.as_str();
