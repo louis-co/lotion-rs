@@ -1,13 +1,31 @@
 use crate::litebox::LiteBox;
-use crate::traits::{PolicyEnforcer, ThemingEngine};
-use std::sync::Arc;
-use tauri::webview::Webview;
+use crate::traits::PolicyEnforcer;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+use tauri::webview::{DownloadEvent, NewWindowResponse, PageLoadEvent, Webview};
 use tauri::{AppHandle, Manager, Runtime, Url, WebviewBuilder, WebviewUrl};
+
+pub const NOTION_HOME: &str = "https://www.notion.so";
+
+/// Height of the native tab strip (logical px), matching Notion desktop's
+/// 36px tab bar. Notion content sits below it.
+pub const TAB_STRIP_HEIGHT: f64 = 36.0;
 
 pub struct TabController<R: Runtime> {
     pub tab_id: String,
     pub window_id: String,
     pub webview: Webview<R>,
+    pub title: Mutex<String>,
+    pub url: Mutex<String>,
+    /// When the tab was last shown; drives memory-saving suspension.
+    pub last_active: Mutex<Instant>,
+    /// Whether the tab's Notion document has been unloaded to save memory.
+    pub suspended: AtomicBool,
+    /// Hidden tabs are not resized during live window resizes (relayouting a
+    /// large database in a tab nobody can see is wasted work); they are laid
+    /// out once when shown.
+    pub needs_layout: AtomicBool,
 }
 
 impl<R: Runtime> TabController<R> {
@@ -16,6 +34,8 @@ impl<R: Runtime> TabController<R> {
         window_id: &str,
         tab_id: String,
         url_str: &str,
+        initial_title: &str,
+        lazy: bool,
         _litebox: Arc<LiteBox>,
     ) -> tauri::Result<Self> {
         let policy = app.state::<Arc<dyn PolicyEnforcer>>().inner().clone();
@@ -39,280 +59,45 @@ impl<R: Runtime> TabController<R> {
             .parse::<Url>()
             .map_err(|e| tauri::Error::AssetNotFound(e.to_string()))?;
 
-        // Create a new webview for this tab using the secure factory
-        let webview_builder =
-            create_secure_webview_builder(app, &tab_id, &url, window_id, policy.clone());
+        // Lazy tabs (restored background tabs) start on an empty document and
+        // load Notion the first time they're shown, like Notion desktop: only
+        // the active tab pays the startup cost.
+        let initial_url = if lazy {
+            "about:blank".parse::<Url>().expect("valid url")
+        } else {
+            url.clone()
+        };
+        let mut webview_builder =
+            create_secure_webview_builder(app, &tab_id, &initial_url, window_id, policy.clone());
+        // Paint Notion's own page colour before the first frame instead of
+        // flashing white in dark mode.
+        let dark = matches!(window.theme(), Ok(tauri::Theme::Dark));
+        webview_builder = webview_builder.background_color(if dark {
+            tauri::window::Color(0x19, 0x19, 0x19, 0xff)
+        } else {
+            tauri::window::Color(0xff, 0xff, 0xff, 0xff)
+        });
 
-        let inner_size = window.inner_size()?;
-        let webview = window.add_child(
-            webview_builder,
-            tauri::LogicalPosition::new(0.0, 0.0),
-            tauri::LogicalSize::new(inner_size.width as f64, inner_size.height as f64),
-        )?;
+        let (position, size) = crate::window_controller::content_bounds(&window)?;
+        let webview = window.add_child(webview_builder, position, size)?;
+        // Created hidden; the orchestrator decides which tab is visible.
+        let _ = webview.hide();
 
         log::info!("Created tab webview: {} in window: {}", tab_id, window_id);
-
-        // Inject theme from config (not hardcoded)
-        let theming = app.state::<Arc<dyn ThemingEngine<R>>>();
-        let active_theme = theming.get_active_theme();
-        theming.inject_theme(&webview, &active_theme);
-
-        // Inject title observer and custom Mac-style Window Controls
-        let title_observer_js = format!(
-            r#"
-            (function() {{
-                const tabId = '{0}';
-
-                // 1. Title Observer
-                let lastTitle = document.title;
-                const observer = new MutationObserver(function() {{
-                    if (document.title !== lastTitle) {{
-                        lastTitle = document.title;
-                        if (window.__TAURI__) {{
-                            window.__TAURI__.invoke('update_tab_state', {{
-                                tabId: tabId,
-                                title: lastTitle,
-                                url: window.location.href
-                            }});
-                        }}
-                    }}
-                }});
-                observer.observe(document.querySelector('title') || document.head, {{
-                    subtree: true, characterData: true, childList: true
-                }});
-
-                // 2. Inject Native-feeling Window Controls (Titlebar)
-                window.addEventListener('DOMContentLoaded', () => {{
-                    const titlebar = document.createElement('div');
-                    titlebar.id = 'lotion-custom-titlebar';
-                    titlebar.setAttribute('data-tauri-drag-region', '');
-                    titlebar.style.cssText = `
-                        position: fixed;
-                        top: 0;
-                        left: 0;
-                        width: 100%;
-                        height: 38px;
-                        z-index: 999999;
-                        display: flex;
-                        align-items: center;
-                        padding-left: 12px;
-                        pointer-events: none;
-                        background: inherit;
-                        border-bottom: 1px solid rgba(0,0,0,0.05);
-                    `;
-
-                    // Push the Notion sidebar down slightly so it doesn't overlap the buttons
-                    const style = document.createElement('style');
-                    style.textContent = `
-                        .notion-sidebar-container {{ margin-top: 38px !important; }}
-                        .notion-topbar {{ padding-left: 80px !important; }}
-                        .lotion-tab {{
-                            padding: 4px 12px;
-                            font-size: 12px;
-                            border-radius: 6px 6px 0 0;
-                            cursor: pointer;
-                            display: flex;
-                            align-items: center;
-                            gap: 8px;
-                            max-width: 150px;
-                            overflow: hidden;
-                            white-space: nowrap;
-                            text-overflow: ellipsis;
-                            background: rgba(0,0,0,0.05);
-                            border: 1px solid rgba(0,0,0,0.1);
-                            border-bottom: none;
-                            pointer-events: auto;
-                        }}
-                        .lotion-tab.active {{
-                            background: white;
-                            font-weight: 500;
-                        }}
-                        .lotion-tab-close {{
-                            font-size: 14px;
-                            opacity: 0.5;
-                            transition: opacity 0.2s;
-                        }}
-                        .lotion-tab-close:hover {{
-                            opacity: 1;
-                        }}
-                    `;
-                    document.head.appendChild(style);
-
-                    const btnContainer = document.createElement('div');
-                    btnContainer.style.cssText = `
-                        display: flex;
-                        gap: 8px;
-                        align-items: center;
-                        pointer-events: auto;
-                    `;
-
-                    const createBtn = (color, clickHandler, label = "") => {{
-                        const btn = document.createElement('div');
-                        btn.style.cssText = `
-                            width: 12px; height: 12px;
-                            border-radius: 50%;
-                            background-color: ${{color}};
-                            cursor: pointer;
-                            border: 1px solid rgba(0,0,0,0.1);
-                            display: flex; align-items: center; justify-content: center;
-                            font-size: 8px; font-family: sans-serif;
-                        `;
-                        if (label) btn.innerText = label;
-                        btn.addEventListener('click', (e) => {{
-                            e.stopPropagation();
-                            clickHandler();
-                        }});
-                        return btn;
-                    }};
-
-                    const closeBtn = createBtn('#ff5f56', () => {{
-                        if (window.__TAURI__) {{
-                            window.__TAURI__.invoke('close_window', {{ windowId: '{1}' }});
-                        }}
-                    }});
-
-                    const minBtn = createBtn('#ffbd2e', () => {{
-                        if (window.__TAURI__) {{
-                            window.__TAURI__.invoke('minimize_window', {{ windowId: '{1}' }});
-                        }}
-                    }});
-
-                    const maxBtn = createBtn('#27c93f', () => {{
-                        if (window.__TAURI__) {{
-                            window.__TAURI__.invoke('maximize_window', {{ windowId: '{1}' }});
-                        }}
-                    }});
-
-
-                    btnContainer.appendChild(closeBtn);
-                    btnContainer.appendChild(minBtn);
-                    btnContainer.appendChild(maxBtn);
-
-                    const spacer = document.createElement('div');
-                    spacer.style.width = '24px';
-                    btnContainer.appendChild(spacer);
-
-                    const tabList = document.createElement('div');
-                    tabList.style.cssText = `
-                        display: flex;
-                        gap: 4px;
-                        align-items: flex-end;
-                        height: 100%;
-                        padding-top: 8px;
-                        pointer-events: auto;
-                    `;
-
-                    const renderTabs = async () => {{
-                        if (!window.__TAURI__) return;
-                        const tabs = await window.__TAURI__.invoke('get_window_tabs', {{ windowId: '{1}' }});
-                        tabList.innerHTML = '';
-                        tabs.forEach(t => {{
-                            const tabEl = document.createElement('div');
-                            tabEl.className = 'lotion-tab' + (t.id === tabId ? ' active' : '');
-                            tabEl.innerText = t.title || 'Notion';
-
-                            const closeX = document.createElement('span');
-                            closeX.className = 'lotion-tab-close';
-                            closeX.innerText = ' ×';
-                            closeX.onclick = (e) => {{
-                                e.stopPropagation();
-                                window.__TAURI__.invoke('close_tab', {{ tabId: t.id }});
-                            }};
-
-                            tabEl.appendChild(closeX);
-                            tabEl.onclick = () => {{
-                                if (t.id !== tabId) {{
-                                    window.__TAURI__.invoke('switch_tab', {{ tabId: t.id }});
-                                }}
-                            }};
-                            tabList.appendChild(tabEl);
-                        }});
-
-                        const newTab = createBtn('#27c93f', () => {{
-                            if (window.__TAURI__) {{
-                                window.__TAURI__.invoke('new_tab', {{ windowId: '{1}' }});
-                            }}
-                        }}, '+');
-                        newTab.style.marginLeft = '8px';
-                        newTab.style.marginBottom = '6px';
-                        tabList.appendChild(newTab);
-                    }};
-
-                    btnContainer.appendChild(tabList);
-                    titlebar.appendChild(btnContainer);
-                    document.body.appendChild(titlebar);
-
-                    renderTabs();
-                    // Poll for tab changes (simple for now)
-                    setInterval(renderTabs, 5000);
-                }});
-            }})();
-        "#,
-            tab_id, window_id
-        );
-        let _ = webview.eval(&title_observer_js);
-
-        // Inject network monitor — intercepts fetch and XHR to log status/errors
-        let network_monitor_js = r#"
-            (function() {
-                const log = (msg) => {
-                    console.log(msg);
-                    if (window.__TAURI__) {
-                        // The log_network_event command in Rust has origin validation and truncation.
-                        window.__TAURI__.invoke('log_network_event', { event: msg });
-                    }
-                };
-
-                const getOrigin = (url) => {
-                    try {
-                        const u = new URL(url);
-                        return `${u.protocol}//${u.hostname}`;
-                    } catch {
-                        return 'invalid-url';
-                    }
-                };
-
-                // Monitor Fetch
-                const originalFetch = window.fetch;
-                window.fetch = async (...args) => {
-                    const url = args[0] instanceof Request ? args[0].url : args[0];
-                    const origin = getOrigin(url); // Log origin instead of full URL
-                    try {
-                        const response = await originalFetch(...args);
-                        log(`FETCH SUCCESS: ${response.status} from ${origin}`);
-                        return response;
-                    } catch (error) {
-                        log(`FETCH ERROR: ${origin} - ${error.message}`);
-                        throw error;
-                    }
-                };
-
-                // Monitor XHR
-                const originalOpen = XMLHttpRequest.prototype.open;
-                XMLHttpRequest.prototype.open = function(method, url) {
-                    this._url = url;
-                    const origin = getOrigin(url); // Log origin instead of full URL
-                    this.addEventListener('load', function() {
-                        log(`XHR SUCCESS: ${this.status} from ${origin}`);
-                    });
-                    this.addEventListener('error', function() {
-                        log(`XHR ERROR: ${origin}`);
-                    });
-                    return originalOpen.apply(this, arguments);
-                };
-                log('Network monitoring active.');
-            })();
-        "#;
-        let _ = webview.eval(network_monitor_js);
 
         Ok(Self {
             tab_id,
             window_id: window_id.to_string(),
             webview,
+            title: Mutex::new(initial_title.to_string()),
+            url: Mutex::new(url_str.to_string()),
+            last_active: Mutex::new(Instant::now()),
+            suspended: AtomicBool::new(lazy),
+            needs_layout: AtomicBool::new(false),
         })
     }
 
-    pub fn load_url(&self, app: &AppHandle, url: &str) -> tauri::Result<()> {
+    pub fn load_url(&self, app: &AppHandle<R>, url: &str) -> tauri::Result<()> {
         let policy = app.state::<Arc<dyn PolicyEnforcer>>();
 
         // Zero-Trust Enforcement: Validate URL before navigation
@@ -329,13 +114,49 @@ impl<R: Runtime> TabController<R> {
         Ok(())
     }
 
+    pub fn current_url(&self) -> String {
+        self.url.lock().expect("TabController url lock poisoned").clone()
+    }
+
+    pub fn current_title(&self) -> String {
+        self.title.lock().expect("TabController title lock poisoned").clone()
+    }
+
     pub fn show(&self) -> tauri::Result<()> {
+        *self.last_active.lock().expect("TabController lock poisoned") = Instant::now();
+        if self.needs_layout.swap(false, Ordering::AcqRel) {
+            let window = self.webview.window();
+            let (position, size) = crate::window_controller::content_bounds(&window)?;
+            self.webview.set_bounds(tauri::Rect {
+                position: position.into(),
+                size: size.into(),
+            })?;
+        }
+        if self.suspended.swap(false, Ordering::AcqRel) {
+            log::info!("Tab {}: resuming suspended tab", self.tab_id);
+            if let Ok(url) = self.current_url().parse::<Url>() {
+                self.webview.navigate(url)?;
+            }
+        }
         self.webview.show()?;
+        self.webview.set_focus()?;
         Ok(())
     }
 
     pub fn hide(&self) -> tauri::Result<()> {
+        *self.last_active.lock().expect("TabController lock poisoned") = Instant::now();
         self.webview.hide()?;
+        Ok(())
+    }
+
+    /// Unload the Notion document of a hidden tab to release its memory. The
+    /// tab's URL and title are kept; it reloads when shown again.
+    pub fn suspend(&self) -> tauri::Result<()> {
+        if self.suspended.swap(true, Ordering::AcqRel) {
+            return Ok(());
+        }
+        log::info!("Tab {}: suspending inactive tab", self.tab_id);
+        self.webview.navigate("about:blank".parse::<Url>().expect("valid url"))?;
         Ok(())
     }
 
@@ -346,26 +167,107 @@ impl<R: Runtime> TabController<R> {
     }
 }
 
-/// Routes secure popup requests into the application's internal TabManager.
-/// Guaranteeing that any nested popups (e.g. nested OAuth flows) inherit
-/// the exact same zero-trust `on_navigation` and `on_new_window` policies
-/// as their parent window via the TabController factory.
-pub fn spawn_secure_popup<R: Runtime>(app: &AppHandle<R>, _policy: Arc<dyn PolicyEnforcer>, url: Url) {
-    log::info!(
-        "Intercepted popup request. Routing into a secure in-app tab: {}",
-        url.as_str()
-    );
+/// Safari's version, so WKWebView presents itself as the browser it is.
+///
+/// WKWebView's default user agent omits the `Version/x Safari/y` tokens, which
+/// makes web apps (Notion included) treat it as an unknown embedded browser and
+/// take slower/compatibility code paths.
+#[cfg(target_os = "macos")]
+fn safari_user_agent() -> &'static str {
+    use std::sync::OnceLock;
+    static UA: OnceLock<String> = OnceLock::new();
+    UA.get_or_init(|| {
+        let version = std::fs::read_to_string("/Applications/Safari.app/Contents/Info.plist")
+            .ok()
+            .and_then(|plist| {
+                let key = plist.find("<key>CFBundleShortVersionString</key>")?;
+                let rest = &plist[key..];
+                let start = rest.find("<string>")? + "<string>".len();
+                let end = rest[start..].find("</string>")? + start;
+                Some(rest[start..end].trim().to_string())
+            })
+            .filter(|v| !v.is_empty() && v.chars().all(|c| c.is_ascii_digit() || c == '.'))
+            .unwrap_or_else(|| "18.0".to_string());
+        // `WantsServiceWorker` is the token Notion desktop appends so the web
+        // app serves its assets from a service worker cache.
+        format!(
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/{} Safari/605.1.15 WantsServiceWorker",
+            version
+        )
+    })
+}
 
-    // Instead of spawning a completely disconnected OS window, dispatch the popup
-    // into our managed TabOrchestrator. This keeps the application bounded strictly
-    // to a single window and enforces all Zero-Trust policies recursively since
-    // create_tab() uses the TabController factory.
+/// Opens a new Notion tab next to the current one and shows it.
+pub fn open_tab_with_url<R: Runtime>(app: &AppHandle<R>, window_id: &str, url: &str) {
     if let Some(orchestrator) = app.try_state::<Arc<dyn crate::traits::TabOrchestrator<R>>>() {
-        if let Err(e) = orchestrator.inner().create_tab(app, "main", url.as_str()) {
-            log::error!("Zero-Trust: Failed to route popup into managed tab: {}", e);
+        match orchestrator.inner().create_tab(app, window_id, url) {
+            Ok(id) => {
+                let _ = orchestrator.inner().show_tab(&id);
+                crate::window_controller::tabs_changed(app);
+            }
+            Err(e) => log::error!("Zero-Trust: Failed to route popup into managed tab: {}", e),
         }
     } else {
         log::error!("Zero-Trust: Cannot spawn tab securely. TabOrchestrator missing from state.");
+    }
+}
+
+fn open_in_system_browser<R: Runtime>(app: &AppHandle<R>, policy: &dyn PolicyEnforcer, url: &str) {
+    if policy.validate_external_link(url) {
+        log::info!("Zero-Trust: Opening validated external link in default browser: {}", url);
+        use tauri_plugin_shell::ShellExt;
+        #[allow(deprecated)]
+        let _ = app.shell().open(url.to_string(), None);
+    } else {
+        log::warn!("Zero-Trust: BLOCKED unauthorized external link: {}", url);
+    }
+}
+
+/// Real popup window for flows that need `window.opener` (Google / Apple
+/// sign-in, `window.open()` followed by a location change). It is confined to
+/// Notion + OAuth providers; anything else goes to the system browser and the
+/// popup closes itself.
+fn spawn_opener_popup<R: Runtime>(
+    app: &AppHandle<R>,
+    policy: Arc<dyn PolicyEnforcer>,
+    url: &Url,
+    features: tauri::webview::NewWindowFeatures,
+) -> NewWindowResponse<R> {
+    let label = format!("popup-{}", uuid::Uuid::new_v4());
+    let nav_policy = policy.clone();
+    let load_app = app.clone();
+    let load_label = label.clone();
+    #[allow(unused_mut)]
+    let mut builder = tauri::WebviewWindowBuilder::new(app, &label, WebviewUrl::External(url.clone()))
+        .title("Notion")
+        .inner_size(520.0, 680.0)
+        .window_features(features)
+        .on_navigation(move |url| nav_policy.validate_frame_url(url.as_str()))
+        .on_page_load(move |_window, payload| {
+            let url_str = payload.url().as_str();
+            if payload.event() != PageLoadEvent::Started
+                || url_str == "about:blank"
+                || policy.validate_url(url_str)
+            {
+                return;
+            }
+            // Main frame left Notion/OAuth: this was an external link opened
+            // via window.open(); hand it to the browser.
+            open_in_system_browser(&load_app, policy.as_ref(), url_str);
+            if let Some(w) = load_app.get_webview_window(&load_label) {
+                let _ = w.close();
+            }
+        });
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder.user_agent(safari_user_agent());
+    }
+    match builder.build() {
+        Ok(window) => NewWindowResponse::Create { window },
+        Err(e) => {
+            log::error!("Failed to create popup window: {}", e);
+            NewWindowResponse::Deny
+        }
     }
 }
 
@@ -378,117 +280,126 @@ pub fn create_secure_webview_builder<R: Runtime>(
     window_id: &str,
     policy: Arc<dyn PolicyEnforcer>,
 ) -> WebviewBuilder<R> {
-    let webview_builder = WebviewBuilder::new(label, WebviewUrl::External(url.clone()));
+    let theming = app
+        .try_state::<Arc<crate::theming::ThemeManager>>()
+        .map(|t| t.initialization_script())
+        .unwrap_or_default();
 
-    let nav_app = app.clone();
+    let mut webview_builder = WebviewBuilder::new(label, WebviewUrl::External(url.clone()))
+        // Hidden tabs keep their realtime connection but run timers at a
+        // reduced rate instead of being frozen or running at full speed.
+        .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Throttle);
+    #[cfg(target_os = "macos")]
+    {
+        webview_builder = webview_builder.user_agent(safari_user_agent());
+    }
+    if !theming.is_empty() {
+        webview_builder = webview_builder.initialization_script(theming);
+    }
+
     let nav_policy = policy.clone();
+    let load_app = app.clone();
+    let load_policy = policy.clone();
     let popup_app = app.clone();
     let popup_policy = policy.clone();
-    let window_id_owned = window_id.to_string();
+    let popup_window_id = window_id.to_string();
+    let title_app = app.clone();
+    let download_app = app.clone();
 
     webview_builder
+        // WebKit asks this for main-frame *and* sub-frame navigations without
+        // telling us which, so it must allow embeds (YouTube, Figma, Loom...)
+        // and Notion's internal about:blank frames. Main-frame confinement to
+        // Notion happens in on_page_load below.
         .on_navigation(move |url| {
-            let window_id = &window_id_owned;
-            let url_str = url.as_str();
-
-            // Intercept custom window control actions
-            if url_str.starts_with("lotion-action://") {
-                let action = url_str.strip_prefix("lotion-action://").unwrap_or("");
-                log::info!("Intercepted Lotion action: {}", action);
-
-                if let Some(w) = nav_app.get_window(window_id) {
-                    match action {
-                        "window:close" => {
-                            let _ = w.close();
-                        }
-                        "window:minimize" => {
-                            let _ = w.minimize();
-                        }
-                        "window:maximize" => {
-                            if let Ok(true) = w.is_maximized() {
-                                let _ = w.unmaximize();
-                            } else {
-                                let _ = w.maximize();
-                            }
-                        }
-                        "tab:new" => {
-                            let notion_url = "https://www.notion.so";
-                            if let Some(orchestrator) =
-                                nav_app.try_state::<Arc<dyn crate::traits::TabOrchestrator<R>>>()
-                            {
-                                if let Ok(new_id) =
-                                    orchestrator.inner().create_tab(&nav_app, window_id, notion_url)
-                                {
-                                    let _ = orchestrator.inner().show_tab(&new_id);
-
-                                    // Update AppState
-                                    if let Some(state_lock) = nav_app.try_state::<Arc<
-                                        tokio::sync::Mutex<crate::state::AppState>,
-                                    >>() {
-                                        let mut app_state = state_lock.blocking_lock();
-                                        if let Some(w_state) = app_state.windows.get_mut(window_id) {
-                                            w_state.tab_ids.push(new_id);
-                                            // Get app_secret from state
-                                            if let Some(app_secret_state) = nav_app.try_state::<Arc<Vec<u8>>>() {
-                                                let _ = app_state.save_to_disk(app_secret_state.inner().as_slice());
-                                            } else {
-                                                log::error!("Zero-Trust: App secret not found in state when trying to save AppState after new tab creation.");
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        _ => {
-                            log::warn!("Unknown Lotion action: {}", action);
-                        }
-                    }
-                }
-                return false; // Prevent actual navigation
+            let allowed = nav_policy.validate_frame_url(url.as_str());
+            if !allowed {
+                log::warn!("Zero-Trust: BLOCKED navigation to: {}", url.as_str());
             }
-
-            if nav_policy.validate_url(url_str) {
-                true // Allow internal navigation to Notion
-            } else if nav_policy.validate_external_link(url_str) {
-                log::info!(
-                    "Zero-Trust: Opening validated external link in default browser: {}",
-                    url_str
-                );
-                use tauri_plugin_shell::ShellExt;
-                #[allow(deprecated)]
-                let _ = nav_app.shell().open(url_str.to_string(), None);
-                false // Block navigation in the webview
-            } else {
-                log::warn!(
-                    "Zero-Trust: BLOCKED unauthorized navigation attempt to: {}",
-                    url_str
-                );
-                false // Block everything else
+            allowed
+        })
+        .on_page_load(move |webview, payload| {
+            let url = payload.url();
+            let url_str = url.as_str();
+            // Suspended tabs park on about:blank; that is expected.
+            if url_str == "about:blank" {
+                return;
+            }
+            if load_policy.validate_url(url_str) {
+                if payload.event() == PageLoadEvent::Finished {
+                    crate::window_controller::tab_url_changed(&load_app, webview.label(), url_str);
+                }
+                return;
+            }
+            if payload.event() != PageLoadEvent::Started {
+                return;
+            }
+            // The *main frame* left Notion (e.g. a checkout or help-center
+            // redirect). Hand the URL to the system browser and put the tab
+            // back where it was.
+            log::warn!("Zero-Trust: main frame left Notion for {}, redirecting to browser", url_str);
+            open_in_system_browser(&load_app, load_policy.as_ref(), url_str);
+            let back = load_app
+                .try_state::<Arc<dyn crate::traits::TabOrchestrator<R>>>()
+                .and_then(|o| o.tab_url(webview.label()))
+                .filter(|u| load_policy.validate_url(u))
+                .unwrap_or_else(|| NOTION_HOME.to_string());
+            if let Ok(back) = back.parse::<Url>() {
+                let _ = webview.navigate(back);
             }
         })
-        .on_new_window(move |url, _| {
-            use tauri_plugin_shell::ShellExt;
-            let url_str = url.as_str();
-
-            if popup_policy.should_route_popup_to_system_browser(url_str) {
-                if popup_policy.validate_external_link(url_str) {
-                    log::info!(
-                        "Routing new window request (popup) to system browser: {}",
-                        url_str
-                    );
-                    #[allow(deprecated)]
-                    let _ = popup_app.shell().open(url_str.to_string(), None);
-                } else {
-                    log::warn!(
-                        "Zero-Trust: BLOCKED unauthorized popup attempt to: {}",
-                        url_str
-                    );
+        .on_document_title_changed(move |webview, title| {
+            crate::window_controller::tab_title_changed(&title_app, &webview, title);
+        })
+        .on_download(move |_webview, event| {
+            match event {
+                DownloadEvent::Requested { url, destination } => {
+                    log::info!("Download requested: {} -> {}", url, destination.display());
                 }
-                tauri::webview::NewWindowResponse::Deny
-            } else {
-                // Spawn a controlled popup using the recursive secure factory
-                spawn_secure_popup(&popup_app, popup_policy.clone(), url.clone());
-                tauri::webview::NewWindowResponse::Deny
+                DownloadEvent::Finished { path, success, .. } => {
+                    let name = path
+                        .as_ref()
+                        .and_then(|p| p.file_name())
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    log::info!("Download finished (success: {}): {}", success, name);
+                    let msg = if success {
+                        format!("Downloaded {} to Downloads", name)
+                    } else {
+                        "Download failed".to_string()
+                    };
+                    crate::window_controller::toast(&download_app, &msg);
+                }
+                _ => {}
             }
+            true
+        })
+        .on_new_window(move |url, features| {
+            let url_str = url.as_str();
+            let is_oauth_or_blank = url_str == "about:blank"
+                || (popup_policy.validate_url(url_str)
+                    && !popup_policy.should_route_popup_to_system_browser(url_str)
+                    && url
+                        .host_str()
+                        .map(|h| !h.ends_with("notion.so") && !h.ends_with("notion.com"))
+                        .unwrap_or(false));
+
+            if is_oauth_or_blank {
+                return spawn_opener_popup(&popup_app, popup_policy.clone(), &url, features);
+            }
+            if popup_policy.validate_url(url_str) {
+                // Notion page opened "in new tab".
+                let app = popup_app.clone();
+                let window_id = popup_window_id.clone();
+                let url = url_str.to_string();
+                // Defer: creating a webview from inside WebKit's delegate
+                // callback re-enters the event loop.
+                let _ = popup_app.run_on_main_thread(move || {
+                    open_tab_with_url(&app, &window_id, &url);
+                });
+            } else {
+                open_in_system_browser(&popup_app, popup_policy.as_ref(), url_str);
+            }
+            NewWindowResponse::Deny
         })
 }

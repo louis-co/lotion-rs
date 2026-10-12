@@ -16,8 +16,27 @@
     },
     "app": {
         "security": {
-            "csp": "default-src 'self' notion.so *.notion.so notion-static.com tauri://localhost wry://localhost; script-src 'self' 'unsafe-inline' 'unsafe-eval' notion.so *.notion.so notion-static.com tauri://localhost wry://localhost; connect-src 'self' notion.so *.notion.so notion-static.com tauri://localhost wry://localhost; img-src 'self' data: blob: notion.so *.notion.so notion-static.com; style-src 'self' 'unsafe-inline' notion.so *.notion.so; font-src 'self' data: notion.so *.notion.so;"
-        }
+            "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ipc: http://ipc.localhost"
+        },
+        "windows": [
+            {
+                "label": "main",
+                "create": false,
+                "url": "index.html",
+                "title": "Notion",
+                "width": 1320,
+                "height": 860,
+                "minWidth": 640,
+                "minHeight": 480,
+                "visible": false,
+                "titleBarStyle": "Overlay",
+                "hiddenTitle": true,
+                "trafficLightPosition": {
+                    "x": 14,
+                    "y": 20.5
+                }
+            }
+        ]
     },
     "bundle": {
         "active": true,
@@ -39,6 +58,9 @@
         "resources": [
             "assets/*",
             "i18n/**/*"
-        ]
+        ],
+        "macOS": {
+            "minimumSystemVersion": "12.0"
+        }
     }
 }

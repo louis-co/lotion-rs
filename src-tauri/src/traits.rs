@@ -8,10 +8,37 @@ pub trait SecuritySandbox: Send + Sync {
 
 /// Interface for tab navigation and orchestration
 pub trait TabOrchestrator<R: Runtime>: Send + Sync {
+    /// Create a hidden tab, inserted after the active tab.
     fn create_tab(&self, app: &AppHandle<R>, window_id: &str, url: &str) -> tauri::Result<String>;
+    /// Create a hidden, not-yet-loaded tab (appended); it loads `url` when first shown.
+    fn create_lazy_tab(
+        &self,
+        app: &AppHandle<R>,
+        window_id: &str,
+        url: &str,
+        title: &str,
+    ) -> tauri::Result<String>;
     fn destroy_tab(&self, tab_id: &str) -> tauri::Result<()>;
     fn show_tab(&self, tab_id: &str) -> tauri::Result<()>;
+    /// Tab ids in display order.
     fn get_tab_ids(&self) -> Vec<String>;
+    fn active_tab_id(&self) -> Option<String>;
+    fn active_webview(&self) -> Option<tauri::Webview<R>>;
+    /// Display-ordered snapshot of all tabs.
+    fn tab_states(&self) -> Vec<crate::state::TabState>;
+    fn tab_url(&self, tab_id: &str) -> Option<String>;
+    /// Record a title/url change reported by a tab's webview.
+    fn update_tab_meta(&self, tab_id: &str, title: Option<String>, url: Option<String>) -> bool;
+    /// Pop the most recently closed tab's URL.
+    fn pop_closed_tab(&self) -> Option<String>;
+    /// Move a tab to a new display index.
+    fn move_tab(&self, tab_id: &str, to_index: usize);
+    /// Resize the visible tab to the window's content area; hidden tabs are
+    /// marked and resized lazily when shown.
+    fn layout(&self, window: &tauri::Window<R>);
+    /// Unload hidden tabs that have been inactive for longer than `max_idle`,
+    /// always keeping the most recently used ones loaded.
+    fn suspend_idle_tabs(&self, max_idle: std::time::Duration);
     fn inject_theme_into_tab(
         &self,
         app: &AppHandle<R>,
@@ -35,6 +62,14 @@ pub trait PolicyEnforcer: Send + Sync {
     fn validate_external_link(&self, url: &str) -> bool;
     /// Returns true if a popup request (like OAuth) should be routed to the system browser
     fn should_route_popup_to_system_browser(&self, url: &str) -> bool;
+    /// Returns true if a navigation that may target a sub-frame (embeds such as
+    /// YouTube/Figma/Loom, or Notion's internal `about:blank` frames) is allowed.
+    ///
+    /// WebKit reports iframe navigations through the same policy hook as
+    /// top-level ones, so this is the permissive check; top-level navigations
+    /// are additionally confined to Notion via [`PolicyEnforcer::validate_url`]
+    /// once the main frame commits.
+    fn validate_frame_url(&self, url: &str) -> bool;
 }
 
 /// Interface for the CSS/JS Theming Engine

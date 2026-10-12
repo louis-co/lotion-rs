@@ -3,15 +3,28 @@ use std::fs;
 use std::path::PathBuf;
 
 /// User-facing configuration persisted to disk as TOML.
+///
+/// `#[serde(default)]` keeps older config files (missing newer keys) loadable
+/// instead of silently falling back to all-defaults.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct LotionConfig {
     pub active_theme: String,
     pub custom_css_path: Option<PathBuf>,
     pub restore_tabs: bool,
+    /// App-wide page zoom (Cmd+= / Cmd+- / Cmd+0).
+    pub zoom: f64,
+    /// Unload background tabs after this many minutes without being viewed,
+    /// freeing their memory (they reload when selected). 0 disables.
+    pub suspend_inactive_tabs_after_minutes: u64,
     pub window: WindowConfig,
 }
 
+/// Runtime-mutable config shared through Tauri state.
+pub type ConfigState = std::sync::Mutex<LotionConfig>;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct WindowConfig {
     pub width: f64,
     pub height: f64,
@@ -20,19 +33,27 @@ pub struct WindowConfig {
     pub maximized: bool,
 }
 
+impl Default for WindowConfig {
+    fn default() -> Self {
+        Self {
+            width: 1200.0,
+            height: 800.0,
+            x: None,
+            y: None,
+            maximized: false,
+        }
+    }
+}
+
 impl Default for LotionConfig {
     fn default() -> Self {
         Self {
-            active_theme: "dracula".to_string(),
+            active_theme: "default".to_string(),
             custom_css_path: None,
             restore_tabs: true,
-            window: WindowConfig {
-                width: 1200.0,
-                height: 800.0,
-                x: None,
-                y: None,
-                maximized: false,
-            },
+            zoom: 1.0,
+            suspend_inactive_tabs_after_minutes: 60,
+            window: WindowConfig::default(),
         }
     }
 }
@@ -48,6 +69,11 @@ impl LotionConfig {
     /// Returns the config file path (~/.config/lotion-rs/config.toml)
     fn config_path() -> PathBuf {
         Self::config_dir().join("config.toml")
+    }
+
+    /// Public path of the config file (for "Settings…").
+    pub fn config_file_path() -> PathBuf {
+        Self::config_path()
     }
 
     /// Migrate config from ~/.config/lotion to ~/.config/lotion-rs if needed
@@ -91,12 +117,15 @@ impl LotionConfig {
                 Ok(contents) => {
                     match toml::from_str::<LotionConfig>(&contents) {
                         Ok(mut config) => { // 'mut' is needed to modify config.custom_css_path
+                            if !config.zoom.is_finite() || !(0.25..=5.0).contains(&config.zoom) {
+                                config.zoom = 1.0;
+                            }
                             if let Some(ref path) = config.custom_css_path {
                                 let custom_themes_dir = Self::config_dir().join("custom_themes");
                                 if !path.starts_with(&custom_themes_dir) {
                                     log::warn!("Custom CSS path '{}' is outside the designated custom themes directory. Discarding for security.", path.display());
                                     config.custom_css_path = None;
-                                } else if !path.extension().map_or(false, |ext| ext == "css") {
+                                } else if path.extension().is_none_or(|ext| ext != "css") {
                                     log::warn!("Custom CSS path '{}' does not have a .css extension. Discarding for security.", path.display());
                                     config.custom_css_path = None;
                                 } else if !path.exists() {
@@ -145,6 +174,16 @@ impl LotionConfig {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn test_partial_config_keeps_values() {
+        // Configs written by older versions lack newer keys; they must still load.
+        let config: LotionConfig = toml::from_str("active_theme = 'nord'\nrestore_tabs = false").unwrap();
+        assert_eq!(config.active_theme, "nord");
+        assert!(!config.restore_tabs);
+        assert_eq!(config.zoom, 1.0);
+        assert_eq!(config.suspend_inactive_tabs_after_minutes, 60);
+    }
 
     #[test]
     fn test_config_migration() {

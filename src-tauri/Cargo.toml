@@ -17,7 +17,6 @@ tokio = { version = "1.0", features = ["full"] }
 url = "2.5"
 toml = "0.8"
 dirs = "5.0"
-hunspell-rs = "0.4.0"
 fluent = "0.16"
 sha2 = "0.10"
 aes-gcm = "0.10"
@@ -27,10 +26,21 @@ rand_core = { version = "0.6", features = ["std"] }
 base64 = "0.22"
 
 [build-dependencies]
-tauri-build = "2.0"
+tauri-build = { version = "2.0", features = [] }
 
 [dev-dependencies]
 tempfile = "3"
+
+# macOS uses WKWebView's native (NSSpellChecker) spell checking, so Hunspell is
+# only linked on Linux/Windows. This also removes the libclang/bindgen build
+# requirement on macOS.
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+hunspell-rs = "0.4.0"
+
+# Same version wry already links; used for WKWebView APIs Tauri doesn't wrap
+# (reloadFromOrigin).
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "WKWebView"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2.182"

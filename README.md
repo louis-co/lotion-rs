@@ -121,7 +121,7 @@ What that means in practice for Lotion-rs:
 ### Core
 - **Full Notion.so Access** — Complete feature parity with the Notion web app, running natively on Linux.
 - **Multi-Tab Interface** — Open multiple Notion pages simultaneously, with tab persistence across restarts (`restore_tabs = true` in config).
-- **Native Window Controls** — Custom frameless window with a Mac-style injected title bar, tab bar, and navigation controls.
+- **Native Window Controls** — Native window controls with a separate tab strip (tabs, back/forward, new tab). Notion pages themselves are never modified or given IPC access.
 - **System Tray Integration** — Minimise to tray and restore from tray without losing your session.
 
 ### Security
@@ -136,7 +136,7 @@ What that means in practice for Lotion-rs:
 
 ### Platform
 - **Linux-First** — Primary development and testing target. Packages: `.deb`, `.rpm`, `.AppImage`.
-- **macOS Support** — Universal binary for x64 and ARM64 (Apple Silicon).
+- **macOS Support** — Native traffic lights in a Notion-style tab strip, standard macOS menus and shortcuts, Dock behaviour like Notion desktop. See [docs/MACOS_PARITY.md](docs/MACOS_PARITY.md) for the parity matrix and performance measurements.
 - **Spell Check** — Leverages the system WebView's built-in spell checking.
 - **Auto-Update** — Built-in update mechanism via Tauri's updater plugin.
 
@@ -159,7 +159,8 @@ sudo apt-get install -y \
 ```
 
 **macOS:**  
-Xcode Command Line Tools are sufficient. No extra dependencies required.
+Xcode Command Line Tools are sufficient. No extra dependencies required (spell
+checking uses the native macOS checker, so Hunspell/libclang are not needed).
 
 **Windows:**  
 No extra prerequisites required (dependencies are bundled).
@@ -194,17 +195,24 @@ cargo tauri dev
 
 ## Configuration
 
-Lotion-rs stores its configuration at `~/.config/lotion-rs/config.toml`. The file is created automatically on first run with sensible defaults.
+Lotion-rs stores its configuration at `~/.config/lotion-rs/config.toml` (macOS: `~/Library/Application Support/lotion-rs/config.toml`; **Lotion → Settings…** (⌘,) opens it). The file is created automatically on first run with sensible defaults.
 
 ```toml
-# Active UI theme
-active_theme = "dracula"
+# Dark-mode accent theme: "default", "dracula" or "nord"
+active_theme = "default"
 
 # Optional: path to a custom CSS file to inject into the Notion interface
 # custom_css_path = "/home/user/.config/lotion-rs/my-theme.css"
 
-# Whether to restore open tabs on next launch
+# Whether to restore open tabs on next launch (only the active one loads at startup)
 restore_tabs = true
+
+# App-wide page zoom (⌘+ / ⌘- / ⌘0)
+zoom = 1.0
+
+# Unload background tabs not viewed for this many minutes to free memory
+# (the 3 most recently used tabs always stay loaded). 0 disables.
+suspend_inactive_tabs_after_minutes = 60
 
 [window]
 width = 1200.0
@@ -214,9 +222,11 @@ maximized = false
 
 | Key | Default | Description |
 |---|---|---|
-| `active_theme` | `"dracula"` | Name of the built-in theme to apply |
+| `active_theme` | `"default"` | Built-in dark-mode theme (`default`, `dracula`, `nord`) |
 | `custom_css_path` | `null` | Absolute path to a custom CSS file |
 | `restore_tabs` | `true` | Restore open tabs on launch |
+| `zoom` | `1.0` | App-wide page zoom (0.5–4.9) |
+| `suspend_inactive_tabs_after_minutes` | `60` | Unload long-hidden tabs to save memory; `0` disables |
 | `window.width` | `1200` | Initial window width in pixels |
 | `window.height` | `800` | Initial window height in pixels |
 | `window.maximized` | `false` | Start maximised |

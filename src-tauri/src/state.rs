@@ -20,6 +20,15 @@ pub struct EncryptedState {
     pub nonce: String, // Base64 encoded nonce
 }
 
+/// AES-256-GCM key protecting `state.json`.
+pub type StateKey = Key<Aes256Gcm>;
+
+/// Derive the AES-256-GCM key used for the state file. This is deliberately
+/// expensive (PBKDF2); call it once and reuse the result.
+pub fn derive_state_key(app_secret: &[u8]) -> Key<Aes256Gcm> {
+    get_encryption_key(app_secret)
+}
+
 fn get_encryption_key(app_secret: &[u8]) -> Key<Aes256Gcm> {
     // Use a stable, but unique per-machine, salt for PBKDF2.
     // Combining the application name and config directory path provides this.
@@ -61,6 +70,7 @@ fn decrypt_data(encrypted_data: &[u8], nonce_bytes: &[u8], key: &Key<Aes256Gcm>)
         .map_err(|e| format!("Decryption error: {:?}", e))
 }
 
+/// Window geometry in logical (scale-independent) pixels.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Bounds {
     pub x: Option<f64>,
@@ -90,6 +100,30 @@ pub struct WindowState {
     pub tab_ids: Vec<String>,
     pub active_tab_id: Option<String>,
 }
+
+impl WindowState {
+    pub fn new(id: &str) -> Self {
+        Self {
+            id: id.to_string(),
+            bounds: Bounds {
+                x: None,
+                y: None,
+                width: 1200.0,
+                height: 800.0,
+            },
+            is_focused: true,
+            is_maximized: false,
+            is_minimized: false,
+            is_full_screen: false,
+            tab_ids: Vec::new(),
+            active_tab_id: None,
+        }
+    }
+}
+
+/// Application state shared between Tauri callbacks. A std mutex: it is never
+/// held across an await, and is used from both sync and async commands.
+pub type SharedState = std::sync::Arc<std::sync::Mutex<AppState>>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppState {
@@ -122,16 +156,27 @@ impl AppState {
     }
 
     /// Save application state to disk.
+    ///
+    /// Derives the encryption key on every call (PBKDF2, 100k iterations), so
+    /// hot paths should derive once with [`derive_state_key`] and use
+    /// [`AppState::save_with_key`] instead (see `persistence::StateStore`).
     pub fn save_to_disk(&self, app_secret: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+        self.save_with_key(&get_encryption_key(app_secret))
+    }
+
+    /// Save application state to disk with a pre-derived key.
+    ///
+    /// The file is written to a temporary sibling and atomically renamed, so a
+    /// crash mid-write can never leave a truncated (undecryptable) state file.
+    pub fn save_with_key(&self, key: &Key<Aes256Gcm>) -> Result<(), Box<dyn std::error::Error>> {
         let path = Self::state_path();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
 
-        let key = get_encryption_key(app_secret);
         let plaintext = serde_json::to_string(self)?;
-        let (ciphertext, nonce) = encrypt_data(plaintext.as_bytes(), &key)
-            .map_err(|e| Box::<dyn std::error::Error>::from(e))?;
+        let (ciphertext, nonce) = encrypt_data(plaintext.as_bytes(), key)
+            .map_err(Box::<dyn std::error::Error>::from)?;
 
         let encrypted_state = EncryptedState {
             data: general_purpose::STANDARD.encode(&ciphertext),
@@ -139,16 +184,37 @@ impl AppState {
         };
         let json = serde_json::to_string_pretty(&encrypted_state)?;
 
-        std::fs::write(&path, json)?;
-        log::info!("Encrypted AppState saved to {}", path.display());
+        let tmp_path = path.with_extension("json.tmp");
+        std::fs::write(&tmp_path, json)?;
+        #[cfg(target_family = "unix")]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600));
+        }
+        std::fs::rename(&tmp_path, &path)?;
+        log::debug!("Encrypted AppState saved to {}", path.display());
         Ok(())
+    }
+
+    /// Drop tab records that no window references any more.
+    pub fn prune_orphan_tabs(&mut self) {
+        let referenced: std::collections::HashSet<&String> = self
+            .windows
+            .values()
+            .flat_map(|w| w.tab_ids.iter())
+            .collect();
+        self.tabs.retain(|id, _| referenced.contains(id));
     }
 
     /// Load application state from disk.
     pub fn load_from_disk(app_secret: &[u8]) -> Option<Self> {
+        Self::load_with_key(&get_encryption_key(app_secret))
+    }
+
+    /// Load application state from disk with a pre-derived key.
+    pub fn load_with_key(key: &Key<Aes256Gcm>) -> Option<Self> {
         let path = Self::state_path();
         if path.exists() {
-            let key = get_encryption_key(app_secret);
             match std::fs::read_to_string(&path) {
                 Ok(contents) => {
                     // Try to load as encrypted state first
@@ -168,7 +234,7 @@ impl AppState {
                             }
                         };
 
-                        match decrypt_data(&decoded_data, &decoded_nonce, &key) {
+                        match decrypt_data(&decoded_data, &decoded_nonce, key) {
                             Ok(plaintext_bytes) => {
                                 match String::from_utf8(plaintext_bytes) {
                                     Ok(plaintext) => match serde_json::from_str::<AppState>(&plaintext) {

@@ -20,6 +20,8 @@ impl PolicyManager {
                 "www.notion.com".to_string(),
                 "msgstore.www.notion.so".to_string(),
                 "file.notion.so".to_string(),
+                // Publicly shared pages ("Share to web") live on *.notion.site.
+                "notion.site".to_string(),
             ],
         }
     }
@@ -30,8 +32,37 @@ impl PolicyManager {
             .any(|domain| host == domain || host.ends_with(&format!(".{}", domain)))
     }
 
+    fn is_tracker(host: &str) -> bool {
+        const TRACKERS: [&str; 5] = [
+            "googletagmanager.com",
+            "google-analytics.com",
+            "amplitude.com",
+            "mixpanel.com",
+            "segment.com",
+        ];
+        TRACKERS
+            .iter()
+            .any(|t| host == *t || host.ends_with(&format!(".{}", t)))
+    }
+
     fn is_trusted_oauth(&self, host: &str) -> bool {
-        let trusted = ["accounts.google.com", "appleid.apple.com"];
+        // Sign-in and import providers Notion desktop keeps in-app (SSO
+        // redirects must stay in the webview to hand the session back).
+        let trusted = [
+            "accounts.google.com",
+            "appleid.apple.com",
+            "login.microsoftonline.com",
+            "login.live.com",
+            "autologon.microsoftazuread-sso.com",
+            "okta.com",
+            "onelogin.com",
+            "jumpcloud.com",
+            "duosecurity.com",
+            "atlassian.com",
+            "app.asana.com",
+            "trello.com",
+            "www.evernote.com",
+        ];
         trusted
             .iter()
             .any(|t| host == *t || host.ends_with(&format!(".{}", t)))
@@ -83,17 +114,7 @@ impl PolicyEnforcer for PolicyManager {
         if let Ok(parsed_url) = url::Url::parse(url) {
             // Block known tracker and telemetry domains from jumping out to the browser
             if let Some(host) = parsed_url.host_str() {
-                let trackers = [
-                    "googletagmanager.com",
-                    "google-analytics.com",
-                    "amplitude.com",
-                    "mixpanel.com",
-                    "segment.com",
-                ];
-                if trackers
-                    .iter()
-                    .any(|t| host == *t || host.ends_with(&format!(".{}", t)))
-                {
+                if Self::is_tracker(host) {
                     log::warn!("PolicyManager: BLOCKED tracker/telemetry domain: {}", host);
                     return false;
                 }
@@ -133,6 +154,31 @@ impl PolicyEnforcer for PolicyManager {
         // Everything else is an external link and should open in system browser
         true
     }
+
+    fn validate_frame_url(&self, url: &str) -> bool {
+        let Ok(parsed_url) = url::Url::parse(url) else {
+            return false;
+        };
+        if parsed_url.scheme() == "https" && self.validate_url(url) {
+            return true;
+        }
+        match parsed_url.scheme() {
+            // Local, content-less documents Notion uses for printing, clipboard
+            // handling and embed placeholders. They cannot load remote content.
+            "about" => matches!(parsed_url.path(), "blank" | "srcdoc"),
+            // Blob URLs are origin-bound object URLs (file previews/exports).
+            "blob" => true,
+            "https" => match parsed_url.host_str() {
+                Some(host) if Self::is_tracker(host) => {
+                    log::warn!("PolicyManager: BLOCKED tracker frame: {}", host);
+                    false
+                }
+                Some(_) => true,
+                None => false,
+            },
+            _ => false,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -166,10 +212,16 @@ mod tests {
         assert!(policy.validate_url("https://www.notion.so/login"));
         assert!(policy.validate_url("https://notion.com/some-page"));
         assert!(policy.validate_url("https://msgstore.www.notion.so/v1/health"));
+        assert!(policy.validate_url("https://acme.notion.site/Roadmap-123"));
+        assert!(!policy.validate_url("https://notion.site.evil.com"));
         
         // OAuth providers allowed during login
         assert!(policy.validate_url("https://accounts.google.com/auth"));
         assert!(policy.validate_url("https://appleid.apple.com/auth"));
+        // Enterprise SSO providers stay in-app, like Notion desktop
+        assert!(policy.validate_url("https://login.microsoftonline.com/common/oauth2"));
+        assert!(policy.validate_url("https://acme.okta.com/app/sso"));
+        assert!(!policy.validate_url("https://okta.com.evil.io/"));
     }
 
     #[test]
@@ -213,6 +265,25 @@ mod tests {
         // Block trackers/analytics even for external clicks
         assert!(!policy.validate_external_link("https://www.googletagmanager.com/gtm.js"));
         assert!(!policy.validate_external_link("https://www.google-analytics.com/collect"));
+    }
+
+    #[test]
+    fn test_validate_frame_urls() {
+        let policy = PolicyManager::new();
+        // Notion's own documents and internal blank frames
+        assert!(policy.validate_frame_url("https://www.notion.so/page"));
+        assert!(policy.validate_frame_url("about:blank"));
+        assert!(policy.validate_frame_url("about:srcdoc"));
+        assert!(policy.validate_frame_url("blob:https://www.notion.so/2f1c"));
+        // Third-party embeds
+        assert!(policy.validate_frame_url("https://www.youtube.com/embed/abc"));
+        assert!(policy.validate_frame_url("https://www.figma.com/embed?url=x"));
+        // Trackers, insecure and dangerous schemes stay blocked
+        assert!(!policy.validate_frame_url("https://www.googletagmanager.com/ns.html"));
+        assert!(!policy.validate_frame_url("http://example.com"));
+        assert!(!policy.validate_frame_url("javascript:alert(1)"));
+        assert!(!policy.validate_frame_url("file:///etc/passwd"));
+        assert!(!policy.validate_frame_url("about:config"));
     }
 
     #[test]

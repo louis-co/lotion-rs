@@ -4,29 +4,271 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>lotion-rs engine</title>
-    <!-- 
-      This is a minimal index.html for lotion-rs engine's background window.
-      The actual UI is rendered by native Iced controls and tabs are loaded
-      dynamically by the TabOrchestrator navigating WebViews to notion.so.
+    <title>Lotion</title>
+    <!--
+      Lotion's tab strip. This bundled page is the only content with IPC
+      access; Notion itself runs in separate, IPC-less child webviews below it.
     -->
     <style>
-        body {
-            background-color: transparent;
-            margin: 0;
-            overflow: hidden;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            color: #333;
-            font-family: system-ui, -apple-system, sans-serif;
+        :root {
+            --strip-h: 36px;
+            --bg: #f9f8f7;
+            --tab-hover: rgba(55, 53, 47, 0.06);
+            --tab-active: #ffffff;
+            --text: rgba(55, 53, 47, 0.65);
+            --text-active: rgb(55, 53, 47);
+            --border: rgba(55, 53, 47, 0.09);
+            --toast-bg: rgb(55, 53, 47);
+            --toast-text: #ffffff;
+            color-scheme: light dark;
         }
+
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --bg: #202020;
+                --tab-hover: rgba(255, 255, 255, 0.055);
+                --tab-active: #191919;
+                --text: rgba(255, 255, 255, 0.46);
+                --text-active: rgba(255, 255, 255, 0.81);
+                --border: rgba(255, 255, 255, 0.094);
+                --toast-bg: #f7f7f5;
+                --toast-text: rgb(55, 53, 47);
+            }
+        }
+
+        html, body {
+            margin: 0;
+            height: 100%;
+            overflow: hidden;
+            background: var(--bg);
+            font: 12.5px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+            color: var(--text);
+            -webkit-user-select: none;
+            user-select: none;
+            cursor: default;
+        }
+
+        #strip {
+            height: var(--strip-h);
+            display: flex;
+            align-items: flex-end;
+            box-sizing: border-box;
+            padding: 0 8px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        /* Room for the native macOS traffic lights (hidden in fullscreen). */
+        .macos #strip { padding-left: 78px; }
+        .macos.fullscreen #strip { padding-left: 8px; }
+
+        .nav {
+            display: flex;
+            gap: 2px;
+            align-self: center;
+            margin-right: 6px;
+        }
+
+        button {
+            all: unset;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 24px;
+            height: 24px;
+            border-radius: 4px;
+            color: var(--text);
+            font-size: 16px;
+        }
+
+        button:hover { background: var(--tab-hover); color: var(--text-active); }
+
+        #tabs {
+            display: flex;
+            align-items: flex-end;
+            gap: 2px;
+            min-width: 0;
+            flex: 0 1 auto;
+            height: 100%;
+        }
+
+        .tab {
+            position: relative;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            box-sizing: border-box;
+            height: 28px;
+            min-width: 48px;
+            width: 220px;
+            flex: 0 1 220px;
+            padding: 0 6px 0 12px;
+            border-radius: 7px 7px 0 0;
+            white-space: nowrap;
+        }
+
+        .tab:hover { background: var(--tab-hover); }
+
+        .tab.active {
+            background: var(--tab-active);
+            color: var(--text-active);
+            box-shadow: 0 0 0 1px var(--border);
+            clip-path: inset(-1px -1px 0 -1px);
+        }
+
+        .tab.dragging { opacity: 0.5; }
+
+        .title {
+            flex: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .close {
+            width: 18px;
+            height: 18px;
+            font-size: 14px;
+            visibility: hidden;
+        }
+
+        .tab:hover .close, .tab.active .close { visibility: visible; }
+
+        #new-tab { align-self: center; margin-left: 4px; flex: none; }
+
+        #toast {
+            position: fixed;
+            right: 10px;
+            top: 6px;
+            max-width: 50%;
+            padding: 5px 10px;
+            border-radius: 6px;
+            background: var(--toast-bg);
+            color: var(--toast-text);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            opacity: 0;
+            transition: opacity 150ms;
+            pointer-events: none;
+        }
+
+        #toast.visible { opacity: 1; }
     </style>
 </head>
 
 <body>
-    <div id="loader">Initializing lotion-rs engine...</div>
+    <div id="strip" data-tauri-drag-region>
+        <div class="nav">
+            <button id="back" title="Back (⌘[)" aria-label="Back">&#8249;</button>
+            <button id="forward" title="Forward (⌘])" aria-label="Forward">&#8250;</button>
+        </div>
+        <div id="tabs" data-tauri-drag-region></div>
+        <button id="new-tab" title="New Tab (⌘T)" aria-label="New Tab">+</button>
+    </div>
+    <div id="toast" role="status"></div>
+
+    <script>
+        (function () {
+            const WINDOW_ID = 'main';
+            const invoke = (cmd, args) => window.__TAURI_INTERNALS__.invoke(cmd, args || {});
+            const tabsEl = document.getElementById('tabs');
+            const toastEl = document.getElementById('toast');
+            let tabs = [];
+            let dragId = null;
+            let toastTimer = null;
+
+            document.documentElement.classList.add(window.__LOTION_PLATFORM__ || 'linux');
+
+            // Keyed reconciliation: tab elements are reused, so title updates
+            // don't rebuild the whole strip.
+            const elements = new Map();
+
+            function tabElement(tab) {
+                let el = elements.get(tab.id);
+                if (!el) {
+                    el = document.createElement('div');
+                    el.className = 'tab';
+                    el.draggable = true;
+                    el.dataset.id = tab.id;
+                    const title = document.createElement('span');
+                    title.className = 'title';
+                    const close = document.createElement('button');
+                    close.className = 'close';
+                    close.textContent = '×';
+                    close.title = 'Close Tab (⌘W)';
+                    close.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        invoke('close_tab', { tabId: el.dataset.id });
+                    });
+                    el.append(title, close);
+                    el.addEventListener('mousedown', (e) => {
+                        if (e.button === 0 && !el.classList.contains('active')) {
+                            invoke('switch_tab', { tabId: el.dataset.id });
+                        }
+                    });
+                    el.addEventListener('auxclick', (e) => {
+                        if (e.button === 1) invoke('close_tab', { tabId: el.dataset.id });
+                    });
+                    el.addEventListener('dragstart', (e) => {
+                        dragId = el.dataset.id;
+                        el.classList.add('dragging');
+                        e.dataTransfer.effectAllowed = 'move';
+                    });
+                    el.addEventListener('dragend', () => {
+                        el.classList.remove('dragging');
+                        dragId = null;
+                    });
+                    el.addEventListener('dragover', (e) => {
+                        if (dragId) e.preventDefault();
+                    });
+                    el.addEventListener('drop', (e) => {
+                        e.preventDefault();
+                        if (!dragId || dragId === el.dataset.id) return;
+                        const toIndex = tabs.findIndex((t) => t.id === el.dataset.id);
+                        invoke('move_tab', { tabId: dragId, toIndex });
+                    });
+                    elements.set(tab.id, el);
+                }
+                const label = tab.title || 'Notion';
+                const titleEl = el.firstChild;
+                if (titleEl.textContent !== label) titleEl.textContent = label;
+                el.title = label;
+                el.classList.toggle('active', !!tab.is_active);
+                return el;
+            }
+
+            window.__lotionRender = function (next) {
+                tabs = Array.isArray(next) ? next : [];
+                const live = new Set(tabs.map((t) => t.id));
+                for (const [id, el] of elements) {
+                    if (!live.has(id)) {
+                        el.remove();
+                        elements.delete(id);
+                    }
+                }
+                tabs.forEach((tab, i) => {
+                    const el = tabElement(tab);
+                    if (tabsEl.children[i] !== el) tabsEl.insertBefore(el, tabsEl.children[i] || null);
+                });
+            };
+
+            window.__lotionToast = function (message) {
+                toastEl.textContent = message;
+                toastEl.classList.add('visible');
+                clearTimeout(toastTimer);
+                toastTimer = setTimeout(() => toastEl.classList.remove('visible'), 3500);
+            };
+
+            window.__lotionSetFullscreen = function (fullscreen) {
+                document.documentElement.classList.toggle('fullscreen', !!fullscreen);
+            };
+
+            document.getElementById('new-tab').addEventListener('click', () => invoke('new_tab'));
+            document.getElementById('back').addEventListener('click', () => invoke('navigate_history', { direction: -1 }));
+            document.getElementById('forward').addEventListener('click', () => invoke('navigate_history', { direction: 1 }));
+
+            invoke('get_window_tabs', { windowId: WINDOW_ID }).then(window.__lotionRender).catch(() => { });
+        })();
+    </script>
 </body>
 
 </html>

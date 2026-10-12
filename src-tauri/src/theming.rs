@@ -3,6 +3,29 @@ use std::path::PathBuf;
 use std::sync::RwLock;
 use tauri::{Runtime, Webview};
 
+/// Built-in themes. Each only applies while Notion itself is in dark mode, so
+/// picking a theme never fights Notion's light appearance.
+const THEMES: &[(&str, &str)] = &[
+    (
+        "dracula",
+        r#"
+.notion-body.dark, .notion-body.dark .notion-frame, .notion-body.dark .notion-peek-renderer,
+.notion-dark-theme .notion-frame { background: #282a36 !important; }
+.notion-body.dark .notion-sidebar, .notion-body.dark .notion-topbar,
+.notion-dark-theme .notion-sidebar, .notion-dark-theme .notion-topbar { background: #21222c !important; }
+"#,
+    ),
+    (
+        "nord",
+        r#"
+.notion-body.dark, .notion-body.dark .notion-frame, .notion-body.dark .notion-peek-renderer,
+.notion-dark-theme .notion-frame { background: #2e3440 !important; }
+.notion-body.dark .notion-sidebar, .notion-body.dark .notion-topbar,
+.notion-dark-theme .notion-sidebar, .notion-dark-theme .notion-topbar { background: #3b4252 !important; }
+"#,
+    ),
+];
+
 pub struct ThemeManager {
     active_theme: RwLock<String>,
     custom_css_path: RwLock<Option<PathBuf>>,
@@ -17,7 +40,7 @@ impl Default for ThemeManager {
 impl ThemeManager {
     pub fn new() -> Self {
         Self {
-            active_theme: RwLock::new("dracula".to_string()),
+            active_theme: RwLock::new("default".to_string()),
             custom_css_path: RwLock::new(None),
         }
     }
@@ -29,93 +52,98 @@ impl ThemeManager {
         }
     }
 
-    fn generate_notion_variables(&self, theme_name: &str) -> String {
-        match theme_name {
-            "dracula" => r#"
-                :root.dark {
-                    --theme--bg: #282a36;
-                    --theme--fg: #44475a;
-                    --theme--text: #f8f8f2;
-                    --theme--text_ui: #6272a4;
-                    --theme--text_ui_info: #8be9fd;
-                    --theme--interactive: #bd93f9;
-                    --theme--interactive_hover: #ff79c6;
-                    --theme--divider: #6272a4;
-                }
-                .notion-sidebar, .notion-topbar { background: #21222c !important; }
-            "#
-            .to_string(),
-            "nord" => r#"
-                :root.dark {
-                    --theme--bg: #2e3440;
-                    --theme--fg: #3b4252;
-                    --theme--text: #eceff4;
-                    --theme--text_ui: #4c566a;
-                    --theme--text_ui_info: #88c0d0;
-                    --theme--interactive: #81a1c1;
-                    --theme--interactive_hover: #88c0d0;
-                    --theme--divider: #4c566a;
-                }
-            "#
-            .to_string(),
-            "default" | "light" => "".to_string(),
-            _ => "".to_string(),
+    fn theme_css(theme_name: &str) -> &'static str {
+        THEMES
+            .iter()
+            .find(|(name, _)| *name == theme_name)
+            .map(|(_, css)| *css)
+            .unwrap_or("")
+    }
+
+    fn read_custom_css(&self) -> Option<String> {
+        let path_guard = self
+            .custom_css_path
+            .read()
+            .expect("ThemeManager: custom_css_path read lock poisoned");
+        let path = path_guard.as_ref()?;
+        match std::fs::read_to_string(path) {
+            Ok(css) => {
+                log::info!("Loaded custom CSS from {}", path.display());
+                Some(css)
+            }
+            Err(e) => {
+                log::warn!("Failed to read custom CSS: {}", e);
+                None
+            }
         }
+    }
+
+    /// JS that installs (or replaces) a `<style>` element. CSS is passed as a
+    /// JSON string literal, so arbitrary content cannot break out of the script.
+    fn style_script(id: &str, css: &str) -> String {
+        let css = serde_json::to_string(css).unwrap_or_else(|_| "\"\"".into());
+        format!(
+            r#"(function(){{
+  var id={id:?}, css={css};
+  var el=document.getElementById(id);
+  if(!css){{ if(el) el.remove(); return; }}
+  if(!el){{ el=document.createElement('style'); el.id=id; (document.head||document.documentElement).appendChild(el); }}
+  if(el.textContent!==css) el.textContent=css;
+}})();"#
+        )
+    }
+
+    /// Script registered as a document-start user script on every Notion tab.
+    /// Unlike `eval`, it survives reloads and in-app navigations. A theme
+    /// picked at runtime is remembered per tab in `sessionStorage`, so reloads
+    /// keep it; on restart the persisted config value applies again.
+    pub fn initialization_script(&self) -> String {
+        let theme = <Self as ThemingEngine<tauri::Wry>>::get_active_theme(self);
+        let themes: serde_json::Map<String, serde_json::Value> = THEMES
+            .iter()
+            .map(|(name, css)| (name.to_string(), serde_json::Value::from(*css)))
+            .collect();
+        let mut script = format!(
+            r#"(function(){{
+  var themes={themes}, t={theme};
+  try {{ t = sessionStorage.getItem('lotion:theme') || t; }} catch (e) {{}}
+  window.__lotionApplyTheme = function(name){{
+    try {{ sessionStorage.setItem('lotion:theme', name); }} catch (e) {{}}
+    var css = themes[name] || '', el = document.getElementById('lotion-theme-style');
+    if (!css) {{ if (el) el.remove(); return; }}
+    if (!el) {{ el = document.createElement('style'); el.id = 'lotion-theme-style'; (document.head || document.documentElement).appendChild(el); }}
+    if (el.textContent !== css) el.textContent = css;
+  }};
+  window.__lotionApplyTheme(t);
+}})();"#,
+            themes = serde_json::Value::Object(themes),
+            theme = serde_json::Value::from(theme),
+        );
+        if let Some(custom) = self.read_custom_css() {
+            script.push_str(&Self::style_script("lotion-custom-style", &custom));
+        }
+        script
     }
 }
 
 impl<R: Runtime> ThemingEngine<R> for ThemeManager {
     fn get_theme_css(&self, theme_name: &str) -> String {
-        let vars = self.generate_notion_variables(theme_name);
-        if vars.is_empty() {
-            return "".to_string();
-        }
-        format!("(function() {{
-            const style = document.getElementById('lotion-theme-style') || document.createElement('style');
-            style.id = 'lotion-theme-style';
-            style.textContent = `{}`;
-            if (!style.parentElement) document.head.appendChild(style);
-        }})();", vars)
+        Self::style_script("lotion-theme-style", Self::theme_css(theme_name))
     }
 
     fn get_custom_css(&self) -> String {
-        let path_guard = self
-            .custom_css_path
-            .read()
-            .expect("ThemeManager: custom_css_path read lock poisoned");
-        if let Some(path) = path_guard.as_ref() {
-            if path.exists() {
-                match std::fs::read_to_string(path) {
-                    Ok(css) => {
-                        log::info!("Loaded custom CSS from {}", path.display());
-                        // Escape backticks and backslashes to prevent JavaScript injection
-                        let escaped_css = css
-                            .replace('`', "\\`")
-                            .replace('\\', "\\\\");
-                        return format!("(function() {{
-                            const style = document.getElementById('lotion-custom-style') || document.createElement('style');
-                            style.id = 'lotion-custom-style';
-                            style.textContent = `{}`;
-                            if (!style.parentElement) document.head.appendChild(style);
-                        }})();", escaped_css);
-                    }
-                    Err(e) => log::warn!("Failed to read custom CSS: {}", e),
-                }
-            }
-        }
-        "".to_string()
+        self.read_custom_css()
+            .map(|css| Self::style_script("lotion-custom-style", &css))
+            .unwrap_or_default()
     }
 
     fn inject_theme(&self, webview: &Webview<R>, theme_name: &str) {
-        let js = <Self as ThemingEngine<R>>::get_theme_css(self, theme_name);
-        if !js.is_empty() {
-            let _ = webview.eval(&js);
-        }
-        // Also inject custom CSS if present
-        let custom = <Self as ThemingEngine<R>>::get_custom_css(self);
-        if !custom.is_empty() {
-            let _ = webview.eval(&custom);
-        }
+        // Live update for the loaded document; the initialization script
+        // re-applies it after reloads.
+        let name = serde_json::to_string(theme_name).unwrap_or_else(|_| "\"default\"".into());
+        let _ = webview.eval(format!(
+            "window.__lotionApplyTheme ? window.__lotionApplyTheme({name}) : void 0;"
+        ));
     }
 
     fn set_active_theme(&self, name: &str) {
@@ -132,5 +160,22 @@ impl<R: Runtime> ThemingEngine<R> for ThemeManager {
             .read()
             .expect("ThemeManager: active_theme read lock poisoned")
             .clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn style_script_escapes_css() {
+        let script = ThemeManager::style_script("x", "a{content:\"`</script>\\\"}");
+        assert!(script.contains(r#"css="a{content:\"`</script>\\\"}""#));
+    }
+
+    #[test]
+    fn unknown_theme_is_empty() {
+        assert_eq!(ThemeManager::theme_css("default"), "");
+        assert!(!ThemeManager::theme_css("dracula").is_empty());
     }
 }

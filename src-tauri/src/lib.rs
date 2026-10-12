@@ -7,8 +7,11 @@ pub mod traits;
 pub mod window_controller;
 
 pub mod config;
+#[cfg(debug_assertions)]
+pub mod diagnostics;
 pub mod i18n;
 pub mod menu;
+pub mod persistence;
 pub mod policy;
 pub mod spellcheck;
 pub mod state;
