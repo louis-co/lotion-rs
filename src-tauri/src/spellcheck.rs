@@ -65,7 +65,10 @@ mod imp {
                 .lock()
                 .expect("SpellcheckManager: hunspell lock poisoned");
             if let Some(hs) = hs_lock.as_ref() {
-                matches!(hs.0.check(word), hunspell_rs::CheckResult::FoundInDictionary)
+                matches!(
+                    hs.0.check(word),
+                    hunspell_rs::CheckResult::FoundInDictionary
+                )
             } else {
                 true
             }

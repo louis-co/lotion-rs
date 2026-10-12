@@ -16,8 +16,12 @@ pub fn apply_linux_sandbox() -> Result<(), String> {
         // CLONE_NEWIPC: IPC namespace
         // CLONE_NEWPID: PID namespace (this process becomes PID 1 in the new namespace)
         // CLONE_NEWNET: Network namespace (no network access)
-        let flags = libc::CLONE_NEWNS | libc::CLONE_NEWUTS | libc::CLONE_NEWIPC | libc::CLONE_NEWPID | libc::CLONE_NEWNET;
-        
+        let flags = libc::CLONE_NEWNS
+            | libc::CLONE_NEWUTS
+            | libc::CLONE_NEWIPC
+            | libc::CLONE_NEWPID
+            | libc::CLONE_NEWNET;
+
         // Note: unshare(CLONE_NEWUSER) is often needed if not running as root,
         // but it can complicate resource access. We'll stick to basic resource dropping
         // if unshare fails or is restricted by sysctl.

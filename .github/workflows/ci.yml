@@ -2,9 +2,8 @@ name: CI
 
 on:
   push:
-    branches: [main, develop, rust-version]
+    branches: [master, main, develop, rust-version, macos-parity-perf]
   pull_request:
-    branches: [main, develop, rust-version]
 
 # Cancel any in-progress run for the same branch/PR so we never waste minutes.
 concurrency:
@@ -137,3 +136,45 @@ jobs:
       - name: cargo audit
         working-directory: src-tauri
         run: cargo audit
+
+  macos:
+    name: macOS regression tests and signed app build
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Setup Node.js for Tauri CLI
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Restore Cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: macos-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: macos-
+
+      - name: Run regression tests
+        working-directory: src-tauri
+        run: cargo test --all-targets --locked
+
+      - name: Check formatting
+        working-directory: src-tauri
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy
+        working-directory: src-tauri
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Build and verify the local app bundle
+        run: bash scripts/build-macos-test-app.sh

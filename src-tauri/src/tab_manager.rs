@@ -49,8 +49,14 @@ impl<R: Runtime> TabManager<R> {
     }
 
     fn all(&self) -> Vec<Arc<TabController<R>>> {
-        let tabs = self.tabs.read().expect("TabManager: tabs read lock poisoned");
-        tabs.order.iter().filter_map(|id| tabs.map.get(id).cloned()).collect()
+        let tabs = self
+            .tabs
+            .read()
+            .expect("TabManager: tabs read lock poisoned");
+        tabs.order
+            .iter()
+            .filter_map(|id| tabs.map.get(id).cloned())
+            .collect()
     }
 }
 
@@ -60,10 +66,20 @@ impl<R: Runtime> TabOrchestrator<R> for TabManager<R> {
 
         // Webview creation happens outside the lock: it can re-enter the event
         // loop, which may in turn call back into the manager.
-        let tab_controller =
-            TabController::new(app, window_id, tab_id.clone(), url, "", false, self.litebox.clone())?;
+        let tab_controller = TabController::new(
+            app,
+            window_id,
+            tab_id.clone(),
+            url,
+            "",
+            false,
+            self.litebox.clone(),
+        )?;
 
-        let mut tabs = self.tabs.write().expect("TabManager: tabs write lock poisoned");
+        let mut tabs = self
+            .tabs
+            .write()
+            .expect("TabManager: tabs write lock poisoned");
         let insert_at = tabs
             .active
             .as_ref()
@@ -85,10 +101,20 @@ impl<R: Runtime> TabOrchestrator<R> for TabManager<R> {
         title: &str,
     ) -> tauri::Result<String> {
         let tab_id = uuid::Uuid::new_v4().to_string();
-        let tab_controller =
-            TabController::new(app, window_id, tab_id.clone(), url, title, true, self.litebox.clone())?;
+        let tab_controller = TabController::new(
+            app,
+            window_id,
+            tab_id.clone(),
+            url,
+            title,
+            true,
+            self.litebox.clone(),
+        )?;
 
-        let mut tabs = self.tabs.write().expect("TabManager: tabs write lock poisoned");
+        let mut tabs = self
+            .tabs
+            .write()
+            .expect("TabManager: tabs write lock poisoned");
         tabs.order.push(tab_id.clone());
         tabs.map.insert(tab_id.clone(), Arc::new(tab_controller));
         log::info!("TabManager: Created lazy tab {}", tab_id);
@@ -97,7 +123,10 @@ impl<R: Runtime> TabOrchestrator<R> for TabManager<R> {
 
     fn destroy_tab(&self, tab_id: &str) -> tauri::Result<()> {
         let (removed, next) = {
-            let mut tabs = self.tabs.write().expect("TabManager: tabs write lock poisoned");
+            let mut tabs = self
+                .tabs
+                .write()
+                .expect("TabManager: tabs write lock poisoned");
             let Some(index) = tabs.order.iter().position(|id| id == tab_id) else {
                 return Ok(());
             };
@@ -133,7 +162,10 @@ impl<R: Runtime> TabOrchestrator<R> for TabManager<R> {
 
     fn show_tab(&self, tab_id: &str) -> tauri::Result<()> {
         let (target, previous) = {
-            let mut tabs = self.tabs.write().expect("TabManager: tabs write lock poisoned");
+            let mut tabs = self
+                .tabs
+                .write()
+                .expect("TabManager: tabs write lock poisoned");
             let Some(target) = tabs.map.get(tab_id).cloned() else {
                 return Ok(());
             };
@@ -222,7 +254,10 @@ impl<R: Runtime> TabOrchestrator<R> for TabManager<R> {
     }
 
     fn move_tab(&self, tab_id: &str, to_index: usize) {
-        let mut tabs = self.tabs.write().expect("TabManager: tabs write lock poisoned");
+        let mut tabs = self
+            .tabs
+            .write()
+            .expect("TabManager: tabs write lock poisoned");
         if let Some(from) = tabs.order.iter().position(|id| id == tab_id) {
             let id = tabs.order.remove(from);
             let to = to_index.min(tabs.order.len());
@@ -264,7 +299,10 @@ impl<R: Runtime> TabOrchestrator<R> for TabManager<R> {
             .collect();
         // Most recently used first; those (plus the active tab) stay loaded.
         candidates.sort_by_key(|(idle, _)| *idle);
-        for (idle, tab) in candidates.into_iter().skip(KEEP_RECENT_TABS.saturating_sub(1)) {
+        for (idle, tab) in candidates
+            .into_iter()
+            .skip(KEEP_RECENT_TABS.saturating_sub(1))
+        {
             if idle >= max_idle && !tab.suspended.load(Ordering::Acquire) {
                 let _ = tab.suspend();
             }

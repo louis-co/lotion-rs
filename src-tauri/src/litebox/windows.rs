@@ -1,13 +1,13 @@
 //! Windows-specific LiteBox implementations using AppContainer and Job Objects.
 
 #[cfg(target_os = "windows")]
+use std::ptr;
+#[cfg(target_os = "windows")]
 use windows_sys::Win32::Foundation::*;
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::System::JobObjects::*;
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::System::Threading::*;
-#[cfg(target_os = "windows")]
-use std::ptr;
 
 pub fn apply_windows_sandbox() -> Result<(), String> {
     log::info!("Applying Windows Job Object restrictions");
@@ -22,7 +22,7 @@ pub fn apply_windows_sandbox() -> Result<(), String> {
 
         // 2. Set Basic Limit Information (e.g. prevent process creation)
         let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
-        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE 
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
             | JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION
             | JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
         info.BasicLimitInformation.ActiveProcessLimit = 10; // Allow some overhead for Tauri/WebView workers
@@ -35,13 +35,16 @@ pub fn apply_windows_sandbox() -> Result<(), String> {
         );
         if res == 0 {
             CloseHandle(job);
-            return Err(format!("Failed to set JobObject limit info: {}", GetLastError()));
+            return Err(format!(
+                "Failed to set JobObject limit info: {}",
+                GetLastError()
+            ));
         }
 
         // 3. Set UI Restrictions
         let mut ui_info: JOBOBJECT_BASIC_UI_RESTRICTIONS = std::mem::zeroed();
-        ui_info.UIRestrictionsClass = JOB_OBJECT_UILIMIT_DESKTOP 
-            | JOB_OBJECT_UILIMIT_EXITWINDOWS 
+        ui_info.UIRestrictionsClass = JOB_OBJECT_UILIMIT_DESKTOP
+            | JOB_OBJECT_UILIMIT_EXITWINDOWS
             | JOB_OBJECT_UILIMIT_SYSTEMPARAMETERS;
 
         let res = SetInformationJobObject(
@@ -52,7 +55,10 @@ pub fn apply_windows_sandbox() -> Result<(), String> {
         );
         if res == 0 {
             CloseHandle(job);
-            return Err(format!("Failed to set JobObject UI restrictions: {}", GetLastError()));
+            return Err(format!(
+                "Failed to set JobObject UI restrictions: {}",
+                GetLastError()
+            ));
         }
 
         // 4. Assign the current process to the Job Object

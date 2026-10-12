@@ -5,7 +5,8 @@ use crate::tab_controller::{NOTION_HOME, TAB_STRIP_HEIGHT};
 use crate::traits::{SecuritySandbox, TabOrchestrator};
 use std::sync::Arc;
 use tauri::{
-    AppHandle, LogicalPosition, LogicalSize, Manager, Runtime, Webview, WebviewWindowBuilder, Window,
+    AppHandle, LogicalPosition, LogicalSize, Manager, Runtime, Webview, WebviewWindowBuilder,
+    Window,
 };
 
 pub const MAIN_WINDOW: &str = "main";
@@ -60,32 +61,45 @@ pub fn tabs_changed<R: Runtime>(app: &AppHandle<R>) {
     let tabs = orchestrator.tab_states();
     log::debug!(
         "tabs changed: {:?}",
-        tabs.iter().map(|t| (t.title.as_str(), t.is_active)).collect::<Vec<_>>()
+        tabs.iter()
+            .map(|t| (t.title.as_str(), t.is_active))
+            .collect::<Vec<_>>()
     );
 
     if let Some(strip) = strip(app) {
         if let Ok(json) = serde_json::to_string(&tabs) {
-            let _ = strip.eval(format!("window.__lotionRender && window.__lotionRender({json});"));
+            let _ = strip.eval(format!(
+                "window.__lotionRender && window.__lotionRender({json});"
+            ));
         }
     }
     if let Some(window) = app.get_window(MAIN_WINDOW) {
         if let Some(active) = tabs.iter().find(|t| t.is_active) {
-            let title = if active.title.is_empty() { "Notion" } else { &active.title };
+            let title = if active.title.is_empty() {
+                "Notion"
+            } else {
+                &active.title
+            };
             let _ = window.set_title(title);
         }
     }
 
     persist(app, |state| {
-        let window = state.windows.entry(MAIN_WINDOW.to_string()).or_insert_with(|| {
-            crate::state::WindowState::new(MAIN_WINDOW)
-        });
+        let window = state
+            .windows
+            .entry(MAIN_WINDOW.to_string())
+            .or_insert_with(|| crate::state::WindowState::new(MAIN_WINDOW));
         window.tab_ids = tabs.iter().map(|t| t.id.clone()).collect();
         window.active_tab_id = tabs.iter().find(|t| t.is_active).map(|t| t.id.clone());
         state.tabs = tabs.into_iter().map(|t| (t.id.clone(), t)).collect();
     });
 }
 
-pub fn tab_title_changed<R: Runtime>(app: &AppHandle<R>, webview: &tauri::Webview<R>, title: String) {
+pub fn tab_title_changed<R: Runtime>(
+    app: &AppHandle<R>,
+    webview: &tauri::Webview<R>,
+    title: String,
+) {
     #[cfg(debug_assertions)]
     if let Some(report) = title.strip_prefix(crate::diagnostics::TITLE_PREFIX) {
         log::info!("[diag] tab {}: {}", webview.label(), report);
@@ -121,7 +135,9 @@ pub fn tab_url_changed<R: Runtime>(app: &AppHandle<R>, tab_id: &str, url: &str) 
 /// Show a short message in the tab strip (e.g. finished downloads).
 pub fn toast<R: Runtime>(app: &AppHandle<R>, message: &str) {
     if let (Some(strip), Ok(json)) = (strip(app), serde_json::to_string(message)) {
-        let _ = strip.eval(format!("window.__lotionToast && window.__lotionToast({json});"));
+        let _ = strip.eval(format!(
+            "window.__lotionToast && window.__lotionToast({json});"
+        ));
     }
 }
 
@@ -199,7 +215,11 @@ pub fn select_tab_number<R: Runtime>(app: &AppHandle<R>, number: usize) {
         return;
     };
     let ids = orchestrator.get_tab_ids();
-    let target = if number >= 9 { ids.last() } else { ids.get(number.saturating_sub(1)) };
+    let target = if number >= 9 {
+        ids.last()
+    } else {
+        ids.get(number.saturating_sub(1))
+    };
     if let Some(id) = target.cloned() {
         switch_tab(app, &id);
     }
@@ -294,7 +314,11 @@ pub fn zoom<R: Runtime>(app: &AppHandle<R>, direction: i32) {
         level
     };
     if let Some(orchestrator) = orchestrator(app) {
-        for webview in orchestrator.get_tab_ids().iter().filter_map(|id| app.get_webview(id)) {
+        for webview in orchestrator
+            .get_tab_ids()
+            .iter()
+            .filter_map(|id| app.get_webview(id))
+        {
             let _ = webview.set_zoom(level);
         }
     }
@@ -351,7 +375,10 @@ impl<R: Runtime> WindowController<R> {
     pub fn new(app: &AppHandle<R>, security: Arc<dyn SecuritySandbox>) -> tauri::Result<Self> {
         let saved_bounds = app.try_state::<SharedState>().and_then(|s| {
             let state = s.lock().expect("AppState lock poisoned");
-            state.windows.get(MAIN_WINDOW).map(|w| (w.bounds.clone(), w.is_maximized))
+            state
+                .windows
+                .get(MAIN_WINDOW)
+                .map(|w| (w.bounds.clone(), w.is_maximized))
         });
 
         let (width, height) = saved_bounds
@@ -455,7 +482,9 @@ impl<R: Runtime> WindowController<R> {
 
     pub fn setup_tabs(&self, app: &AppHandle<R>) -> tauri::Result<()> {
         let Some(tab_manager) = orchestrator(app) else {
-            return Err(tauri::Error::AssetNotFound("TabOrchestrator state missing".into()));
+            return Err(tauri::Error::AssetNotFound(
+                "TabOrchestrator state missing".into(),
+            ));
         };
 
         let restore = app
@@ -485,7 +514,10 @@ impl<R: Runtime> WindowController<R> {
                         .unwrap_or_default()
                 })
                 .unwrap_or_default();
-            log::info!("WindowController: Restoring {} tabs from saved state.", saved.len());
+            log::info!(
+                "WindowController: Restoring {} tabs from saved state.",
+                saved.len()
+            );
 
             let any_active = saved.iter().any(|(_, _, active)| *active);
             for (i, (url, title, was_active)) in saved.into_iter().enumerate() {
@@ -504,7 +536,10 @@ impl<R: Runtime> WindowController<R> {
         }
 
         if tab_manager.get_tab_ids().is_empty() {
-            log::info!("WindowController: Creating initial tab for Notion: {}", NOTION_HOME);
+            log::info!(
+                "WindowController: Creating initial tab for Notion: {}",
+                NOTION_HOME
+            );
             let id = tab_manager.create_tab(app, self.window.label(), NOTION_HOME)?;
             apply_zoom_to(app, &id);
             let _ = tab_manager.show_tab(&id);
@@ -530,12 +565,19 @@ fn position_is_visible<R: Runtime>(window: &Window<R>, x: f64, y: f64, width: f6
         let size = m.size().to_logical::<f64>(scale);
         let probe_x = x + width.min(200.0) / 2.0;
         let probe_y = y + 10.0;
-        probe_x >= pos.x && probe_x < pos.x + size.width && probe_y >= pos.y && probe_y < pos.y + size.height
+        probe_x >= pos.x
+            && probe_x < pos.x + size.width
+            && probe_y >= pos.y
+            && probe_y < pos.y + size.height
     })
 }
 
 fn record_bounds<R: Runtime>(app: &AppHandle<R>, window: &Window<R>, label: &str) {
-    let (Ok(scale), Ok(pos), Ok(size)) = (window.scale_factor(), window.outer_position(), window.inner_size()) else {
+    let (Ok(scale), Ok(pos), Ok(size)) = (
+        window.scale_factor(),
+        window.outer_position(),
+        window.inner_size(),
+    ) else {
         return;
     };
     let maximized = window.is_maximized().unwrap_or(false);

@@ -38,10 +38,20 @@ pub fn create_main_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 
     let file_menu = SubmenuBuilder::new(app, "File")
         .item(&item(app, "tab_new", "New Tab", Some("CmdOrCtrl+T"))?)
-        .item(&item(app, "tab_reopen", "Reopen Closed Tab", Some("CmdOrCtrl+Shift+T"))?)
+        .item(&item(
+            app,
+            "tab_reopen",
+            "Reopen Closed Tab",
+            Some("CmdOrCtrl+Shift+T"),
+        )?)
         .separator()
         .item(&item(app, "tab_close", "Close Tab", Some("CmdOrCtrl+W"))?)
-        .item(&item(app, "window_close", "Close Window", Some("CmdOrCtrl+Shift+W"))?)
+        .item(&item(
+            app,
+            "window_close",
+            "Close Window",
+            Some("CmdOrCtrl+Shift+W"),
+        )?)
         .build()?;
 
     let edit_menu = SubmenuBuilder::new(app, "Edit")
@@ -62,9 +72,19 @@ pub fn create_main_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 
     let view_menu = SubmenuBuilder::new(app, "View")
         .item(&item(app, "reload", "Reload", Some("CmdOrCtrl+R"))?)
-        .item(&item(app, "reload_force", "Force Reload", Some("CmdOrCtrl+Shift+R"))?)
+        .item(&item(
+            app,
+            "reload_force",
+            "Force Reload",
+            Some("CmdOrCtrl+Shift+R"),
+        )?)
         .separator()
-        .item(&item(app, "zoom_reset", "Actual Size", Some("CmdOrCtrl+0"))?)
+        .item(&item(
+            app,
+            "zoom_reset",
+            "Actual Size",
+            Some("CmdOrCtrl+0"),
+        )?)
         .item(&item(app, "zoom_in", "Zoom In", Some("CmdOrCtrl+Plus"))?)
         .item(&item(app, "zoom_in_alt", "Zoom In", Some("CmdOrCtrl+="))?)
         .item(&item(app, "zoom_out", "Zoom Out", Some("CmdOrCtrl+-"))?)
@@ -72,7 +92,12 @@ pub fn create_main_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         .item(&theme_submenu)
         .separator()
         .item(&PredefinedMenuItem::fullscreen(app, None)?)
-        .item(&item(app, "toggle_dev_tools", "Developer Tools", Some("Alt+CmdOrCtrl+I"))?)
+        .item(&item(
+            app,
+            "toggle_dev_tools",
+            "Developer Tools",
+            Some("Alt+CmdOrCtrl+I"),
+        )?)
         .build()?;
 
     let history_menu = SubmenuBuilder::new(app, "History")
@@ -87,14 +112,43 @@ pub fn create_main_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         .maximize()
         .separator()
         .item(&item(app, "tab_next", "Select Next Tab", Some("Ctrl+Tab"))?)
-        .item(&item(app, "tab_prev", "Select Previous Tab", Some("Ctrl+Shift+Tab"))?)
-        .item(&item(app, "tab_next_alt", "Select Next Tab", Some("CmdOrCtrl+Shift+]"))?)
-        .item(&item(app, "tab_prev_alt", "Select Previous Tab", Some("CmdOrCtrl+Shift+["))?)
-        .item(&item(app, "tab_next_alt2", "Select Next Tab", Some("Alt+CmdOrCtrl+Right"))?)
-        .item(&item(app, "tab_prev_alt2", "Select Previous Tab", Some("Alt+CmdOrCtrl+Left"))?)
+        .item(&item(
+            app,
+            "tab_prev",
+            "Select Previous Tab",
+            Some("Ctrl+Shift+Tab"),
+        )?)
+        .item(&item(
+            app,
+            "tab_next_alt",
+            "Select Next Tab",
+            Some("CmdOrCtrl+Shift+]"),
+        )?)
+        .item(&item(
+            app,
+            "tab_prev_alt",
+            "Select Previous Tab",
+            Some("CmdOrCtrl+Shift+["),
+        )?)
+        .item(&item(
+            app,
+            "tab_next_alt2",
+            "Select Next Tab",
+            Some("Alt+CmdOrCtrl+Right"),
+        )?)
+        .item(&item(
+            app,
+            "tab_prev_alt2",
+            "Select Previous Tab",
+            Some("Alt+CmdOrCtrl+Left"),
+        )?)
         .separator();
     for n in 1..=9 {
-        let label = if n == 9 { "Select Last Tab".to_string() } else { format!("Select Tab {n}") };
+        let label = if n == 9 {
+            "Select Last Tab".to_string()
+        } else {
+            format!("Select Tab {n}")
+        };
         window_menu = window_menu.item(&item(
             app,
             &format!("tab_select_{n}"),
@@ -104,7 +158,12 @@ pub fn create_main_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     }
     let window_menu = window_menu
         .separator()
-        .item(&item(app, "window_show", "Notion", Some("CmdOrCtrl+Alt+0"))?)
+        .item(&item(
+            app,
+            "window_show",
+            "Notion",
+            Some("CmdOrCtrl+Alt+0"),
+        )?)
         .build()?;
 
     let help_menu = SubmenuBuilder::new(app, "Help")
@@ -133,7 +192,9 @@ pub fn create_main_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
             "window_close" => wc::close_main_window(app_handle),
             "window_show" => wc::show_main_window(app_handle),
             "tab_next" | "tab_next_alt" | "tab_next_alt2" => wc::select_relative_tab(app_handle, 1),
-            "tab_prev" | "tab_prev_alt" | "tab_prev_alt2" => wc::select_relative_tab(app_handle, -1),
+            "tab_prev" | "tab_prev_alt" | "tab_prev_alt2" => {
+                wc::select_relative_tab(app_handle, -1)
+            }
             "nav_back" => wc::go_back(app_handle),
             "nav_forward" => wc::go_forward(app_handle),
             "nav_home" => wc::go_home(app_handle),
@@ -175,7 +236,8 @@ fn switch_theme<R: Runtime>(app_handle: &AppHandle<R>, theme_name: &str) {
     };
     theming.set_active_theme(theme_name);
 
-    if let Some(orchestrator) = app_handle.try_state::<Arc<dyn crate::traits::TabOrchestrator<R>>>() {
+    if let Some(orchestrator) = app_handle.try_state::<Arc<dyn crate::traits::TabOrchestrator<R>>>()
+    {
         for tab_id in orchestrator.get_tab_ids() {
             let _ = orchestrator.inject_theme_into_tab(app_handle, &tab_id, theme_name);
         }
@@ -193,7 +255,10 @@ fn open_config_file() {
     let path = crate::config::LotionConfig::config_file_path();
     log::info!("Opening config file {}", path.display());
     #[cfg(target_os = "macos")]
-    let result = std::process::Command::new("open").arg("-t").arg(&path).spawn();
+    let result = std::process::Command::new("open")
+        .arg("-t")
+        .arg(&path)
+        .spawn();
     #[cfg(target_os = "linux")]
     let result = std::process::Command::new("xdg-open").arg(&path).spawn();
     #[cfg(target_os = "windows")]
