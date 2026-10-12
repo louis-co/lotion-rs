@@ -60,7 +60,7 @@ jobs:
         working-directory: src-tauri
         run: |
           export LIBCLANG_PATH=$(llvm-config --libdir)
-          cargo check --all-targets --release
+          cargo check --all-targets --release --locked
 
       - name: cargo fmt
         working-directory: src-tauri
@@ -70,7 +70,7 @@ jobs:
         working-directory: src-tauri
         run: |
           export LIBCLANG_PATH=$(llvm-config --libdir)
-          cargo clippy --all-targets --release -- -D warnings
+          cargo clippy --all-targets --release --locked -- -D warnings
 
   # ────────────────────────────────────────────────────────────────
   # 2. Unit / integration tests
@@ -113,7 +113,7 @@ jobs:
         working-directory: src-tauri
         run: |
           export LIBCLANG_PATH=$(llvm-config --libdir)
-          cargo test --all-targets --release
+          cargo test --all-targets --release --locked
 
   # ────────────────────────────────────────────────────────────────
   # 3. Dependency security audit
