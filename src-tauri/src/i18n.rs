@@ -110,7 +110,7 @@ mod tests {
         assert!(validate_locale("en-US"));
         assert!(validate_locale("pt_BR"));
         assert!(validate_locale("fr"));
-        
+
         assert!(!validate_locale(""));
         assert!(!validate_locale("this-locale-is-too-long-for-sanitization"));
         assert!(!validate_locale("../../../tmp"));
@@ -119,4 +119,3 @@ mod tests {
         assert!(!validate_locale("en;rm -rf /"));
     }
 }
-

@@ -17,7 +17,10 @@ fn notion_home_url(url: &str) -> &str {
         return url;
     };
     if parsed.scheme() == "https"
-        && matches!(parsed.host_str(), Some("notion.so" | "www.notion.so" | "notion.com" | "www.notion.com"))
+        && matches!(
+            parsed.host_str(),
+            Some("notion.so" | "www.notion.so" | "notion.com" | "www.notion.com")
+        )
         && parsed.path() == "/"
         && parsed.query().is_none()
         && parsed.fragment().is_none()
@@ -138,15 +141,24 @@ impl<R: Runtime> TabController<R> {
     }
 
     pub fn current_url(&self) -> String {
-        self.url.lock().expect("TabController url lock poisoned").clone()
+        self.url
+            .lock()
+            .expect("TabController url lock poisoned")
+            .clone()
     }
 
     pub fn current_title(&self) -> String {
-        self.title.lock().expect("TabController title lock poisoned").clone()
+        self.title
+            .lock()
+            .expect("TabController title lock poisoned")
+            .clone()
     }
 
     pub fn show(&self) -> tauri::Result<()> {
-        *self.last_active.lock().expect("TabController lock poisoned") = Instant::now();
+        *self
+            .last_active
+            .lock()
+            .expect("TabController lock poisoned") = Instant::now();
         if self.needs_layout.swap(false, Ordering::AcqRel) {
             let window = self.webview.window();
             let (position, size) = crate::window_controller::content_bounds(&window)?;
@@ -167,7 +179,10 @@ impl<R: Runtime> TabController<R> {
     }
 
     pub fn hide(&self) -> tauri::Result<()> {
-        *self.last_active.lock().expect("TabController lock poisoned") = Instant::now();
+        *self
+            .last_active
+            .lock()
+            .expect("TabController lock poisoned") = Instant::now();
         self.webview.hide()?;
         Ok(())
     }
@@ -179,7 +194,8 @@ impl<R: Runtime> TabController<R> {
             return Ok(());
         }
         log::info!("Tab {}: suspending inactive tab", self.tab_id);
-        self.webview.navigate("about:blank".parse::<Url>().expect("valid url"))?;
+        self.webview
+            .navigate("about:blank".parse::<Url>().expect("valid url"))?;
         Ok(())
     }
 
@@ -237,7 +253,10 @@ pub fn open_tab_with_url<R: Runtime>(app: &AppHandle<R>, window_id: &str, url: &
 
 fn open_in_system_browser<R: Runtime>(app: &AppHandle<R>, policy: &dyn PolicyEnforcer, url: &str) {
     if policy.validate_external_link(url) {
-        log::info!("Zero-Trust: Opening validated external link in default browser: {}", url);
+        log::info!(
+            "Zero-Trust: Opening validated external link in default browser: {}",
+            url
+        );
         use tauri_plugin_shell::ShellExt;
         #[allow(deprecated)]
         let _ = app.shell().open(url.to_string(), None);
@@ -261,26 +280,27 @@ fn spawn_opener_popup<R: Runtime>(
     let load_app = app.clone();
     let load_label = label.clone();
     #[allow(unused_mut)]
-    let mut builder = tauri::WebviewWindowBuilder::new(app, &label, WebviewUrl::External(url.clone()))
-        .title("Notion")
-        .inner_size(520.0, 680.0)
-        .window_features(features)
-        .on_navigation(move |url| nav_policy.validate_frame_url(url.as_str()))
-        .on_page_load(move |_window, payload| {
-            let url_str = payload.url().as_str();
-            if payload.event() != PageLoadEvent::Started
-                || url_str == "about:blank"
-                || policy.validate_url(url_str)
-            {
-                return;
-            }
-            // Main frame left Notion/OAuth: this was an external link opened
-            // via window.open(); hand it to the browser.
-            open_in_system_browser(&load_app, policy.as_ref(), url_str);
-            if let Some(w) = load_app.get_webview_window(&load_label) {
-                let _ = w.close();
-            }
-        });
+    let mut builder =
+        tauri::WebviewWindowBuilder::new(app, &label, WebviewUrl::External(url.clone()))
+            .title("Notion")
+            .inner_size(520.0, 680.0)
+            .window_features(features)
+            .on_navigation(move |url| nav_policy.validate_frame_url(url.as_str()))
+            .on_page_load(move |_window, payload| {
+                let url_str = payload.url().as_str();
+                if payload.event() != PageLoadEvent::Started
+                    || url_str == "about:blank"
+                    || policy.validate_url(url_str)
+                {
+                    return;
+                }
+                // Main frame left Notion/OAuth: this was an external link opened
+                // via window.open(); hand it to the browser.
+                open_in_system_browser(&load_app, policy.as_ref(), url_str);
+                if let Some(w) = load_app.get_webview_window(&load_label) {
+                    let _ = w.close();
+                }
+            });
     #[cfg(target_os = "macos")]
     {
         builder = builder.user_agent(safari_user_agent());
@@ -362,7 +382,10 @@ pub fn create_secure_webview_builder<R: Runtime>(
             // The *main frame* left Notion (e.g. a checkout or help-center
             // redirect). Hand the URL to the system browser and put the tab
             // back where it was.
-            log::warn!("Zero-Trust: main frame left Notion for {}, redirecting to browser", url_str);
+            log::warn!(
+                "Zero-Trust: main frame left Notion for {}, redirecting to browser",
+                url_str
+            );
             open_in_system_browser(&load_app, load_policy.as_ref(), url_str);
             let back = load_app
                 .try_state::<Arc<dyn crate::traits::TabOrchestrator<R>>>()
@@ -383,27 +406,27 @@ pub fn create_secure_webview_builder<R: Runtime>(
             }
             #[cfg(not(target_os = "macos"))]
             {
-            match event {
-                DownloadEvent::Requested { url, destination } => {
-                    log::info!("Download requested: {} -> {}", url, destination.display());
+                match event {
+                    DownloadEvent::Requested { url, destination } => {
+                        log::info!("Download requested: {} -> {}", url, destination.display());
+                    }
+                    DownloadEvent::Finished { path, success, .. } => {
+                        let name = path
+                            .as_ref()
+                            .and_then(|p| p.file_name())
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_default();
+                        log::info!("Download finished (success: {}): {}", success, name);
+                        let msg = if success {
+                            format!("Downloaded {} to Downloads", name)
+                        } else {
+                            "Download failed".to_string()
+                        };
+                        crate::window_controller::toast(&download_app, &msg);
+                    }
+                    _ => {}
                 }
-                DownloadEvent::Finished { path, success, .. } => {
-                    let name = path
-                        .as_ref()
-                        .and_then(|p| p.file_name())
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_default();
-                    log::info!("Download finished (success: {}): {}", success, name);
-                    let msg = if success {
-                        format!("Downloaded {} to Downloads", name)
-                    } else {
-                        "Download failed".to_string()
-                    };
-                    crate::window_controller::toast(&download_app, &msg);
-                }
-                _ => {}
-            }
-            true
+                true
             }
         })
         .on_new_window(move |url, features| {

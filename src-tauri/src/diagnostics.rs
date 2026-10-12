@@ -81,7 +81,8 @@ pub fn start_selftest<R: Runtime>(app: &AppHandle<R>) {
         ("select_last(cmd9)", |a| wc::select_tab_number(a, 9)),
         ("select_first(cmd1)", |a| wc::select_tab_number(a, 1)),
         ("move_first_to_end", |a| {
-            if let Some(o) = a.try_state::<std::sync::Arc<dyn crate::traits::TabOrchestrator<R>>>() {
+            if let Some(o) = a.try_state::<std::sync::Arc<dyn crate::traits::TabOrchestrator<R>>>()
+            {
                 if let Some(id) = o.get_tab_ids().first().cloned() {
                     wc::move_tab(a, &id, 99);
                 }
@@ -95,7 +96,8 @@ pub fn start_selftest<R: Runtime>(app: &AppHandle<R>) {
         ("force_reload", |a| wc::force_reload_active(a)),
         ("reload", |a| wc::reload_active(a)),
         ("suspend_idle(0s)", |a| {
-            if let Some(o) = a.try_state::<std::sync::Arc<dyn crate::traits::TabOrchestrator<R>>>() {
+            if let Some(o) = a.try_state::<std::sync::Arc<dyn crate::traits::TabOrchestrator<R>>>()
+            {
                 o.suspend_idle_tabs(Duration::ZERO);
             }
         }),
@@ -116,7 +118,9 @@ pub fn start_selftest<R: Runtime>(app: &AppHandle<R>) {
             let handle = app.clone();
             let _ = app.run_on_main_thread(move || {
                 step(&handle);
-                if let Some(o) = handle.try_state::<std::sync::Arc<dyn crate::traits::TabOrchestrator<R>>>() {
+                if let Some(o) =
+                    handle.try_state::<std::sync::Arc<dyn crate::traits::TabOrchestrator<R>>>()
+                {
                     let tabs: Vec<String> = o
                         .tab_states()
                         .iter()

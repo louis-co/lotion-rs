@@ -184,6 +184,11 @@ cargo tauri build
 
 Packaged bundles will be output to `src-tauri/target/release/bundle/`.
 
+For local macOS UI tests, quit Lotion and run
+`./scripts/build-macos-test-app.sh` from the repository root. It rebuilds the
+complete `.app` with a local ad-hoc signature and verifies its executable,
+metadata, and resources before testing.
+
 ### Development Run
 
 ```bash

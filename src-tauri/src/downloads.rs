@@ -11,8 +11,8 @@ use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use tauri::webview::DownloadEvent;
-use tauri::{AppHandle, Runtime};
+#[cfg(target_os = "macos")]
+use tauri::{webview::DownloadEvent, AppHandle, Runtime};
 use tempfile::{NamedTempFile, TempDir};
 
 struct PendingDownload {
@@ -156,6 +156,7 @@ fn publish_without_overwrite(
     ))
 }
 
+#[cfg(target_os = "macos")]
 pub(crate) fn handle_download<R: Runtime>(
     app: &AppHandle<R>,
     downloads: &DownloadManager,

@@ -1,15 +1,17 @@
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::path::PathBuf;
 use aes_gcm::{
     aead::{Aead, KeyInit},
-    Aes256Gcm, Key, Nonce // Or `Nonce` from `aes_gcm::aead::AeadCore`
+    Aes256Gcm,
+    Key,
+    Nonce, // Or `Nonce` from `aes_gcm::aead::AeadCore`
 };
-use pbkdf2::pbkdf2_hmac;
-use sha2::Sha256;
-use rand_core::{RngCore, SeedableRng};
-use rand::rngs::StdRng;
 use base64::{engine::general_purpose, Engine as _};
+use pbkdf2::pbkdf2_hmac;
+use rand::rngs::StdRng;
+use rand_core::{RngCore, SeedableRng};
+use serde::{Deserialize, Serialize};
+use sha2::Sha256;
+use std::collections::HashMap;
+use std::path::PathBuf;
 
 // const APPLICATION_SECRET: &[u8] = b"lotion-rs-super-secret-key-that-is-long-and-random-for-pbkdf2";
 const PBKDF2_ITERATIONS: u32 = 100_000;
@@ -17,7 +19,7 @@ const NONCE_LEN: usize = 12;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EncryptedState {
-    pub data: String, // Base64 encoded encrypted data
+    pub data: String,  // Base64 encoded encrypted data
     pub nonce: String, // Base64 encoded nonce
 }
 
@@ -62,7 +64,11 @@ fn encrypt_data(data: &[u8], key: &Key<Aes256Gcm>) -> Result<(Vec<u8>, Vec<u8>),
         .map_err(|e| format!("Encryption error: {:?}", e))
 }
 
-fn decrypt_data(encrypted_data: &[u8], nonce_bytes: &[u8], key: &Key<Aes256Gcm>) -> Result<Vec<u8>, String> {
+fn decrypt_data(
+    encrypted_data: &[u8],
+    nonce_bytes: &[u8],
+    key: &Key<Aes256Gcm>,
+) -> Result<Vec<u8>, String> {
     // GenericArray::from_slice panics on the wrong length. Saved state is
     // untrusted input: reject corruption so startup can fall back to fresh state.
     if nonce_bytes.len() != NONCE_LEN {
@@ -87,7 +93,6 @@ pub struct Bounds {
     pub width: f64,
     pub height: f64,
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TabState {
@@ -184,8 +189,8 @@ impl AppState {
         }
 
         let plaintext = serde_json::to_string(self)?;
-        let (ciphertext, nonce) = encrypt_data(plaintext.as_bytes(), key)
-            .map_err(Box::<dyn std::error::Error>::from)?;
+        let (ciphertext, nonce) =
+            encrypt_data(plaintext.as_bytes(), key).map_err(Box::<dyn std::error::Error>::from)?;
 
         let encrypted_state = EncryptedState {
             data: general_purpose::STANDARD.encode(&ciphertext),
@@ -232,34 +237,40 @@ impl AppState {
                 Ok(contents) => {
                     // Try to load as encrypted state first
                     if let Ok(encrypted_state) = serde_json::from_str::<EncryptedState>(&contents) {
-                        let decoded_data = match general_purpose::STANDARD.decode(&encrypted_state.data) {
-                            Ok(d) => d,
-                            Err(e) => {
-                                log::warn!("Failed to base64 decode encrypted data: {}", e);
-                                return None;
-                            }
-                        };
-                        let decoded_nonce = match general_purpose::STANDARD.decode(&encrypted_state.nonce) {
-                            Ok(n) => n,
-                            Err(e) => {
-                                log::warn!("Failed to base64 decode nonce: {}", e);
-                                return None;
-                            }
-                        };
+                        let decoded_data =
+                            match general_purpose::STANDARD.decode(&encrypted_state.data) {
+                                Ok(d) => d,
+                                Err(e) => {
+                                    log::warn!("Failed to base64 decode encrypted data: {}", e);
+                                    return None;
+                                }
+                            };
+                        let decoded_nonce =
+                            match general_purpose::STANDARD.decode(&encrypted_state.nonce) {
+                                Ok(n) => n,
+                                Err(e) => {
+                                    log::warn!("Failed to base64 decode nonce: {}", e);
+                                    return None;
+                                }
+                            };
 
                         match decrypt_data(&decoded_data, &decoded_nonce, key) {
-                            Ok(plaintext_bytes) => {
-                                match String::from_utf8(plaintext_bytes) {
-                                    Ok(plaintext) => match serde_json::from_str::<AppState>(&plaintext) {
-                                        Ok(state) => {
-                                            log::info!("Encrypted AppState loaded from {}", path.display());
-                                            return Some(state);
-                                        }
-                                        Err(e) => log::warn!("Failed to parse decrypted state: {}", e),
-                                    },
-                                    Err(e) => log::warn!("Failed to convert decrypted bytes to string: {}", e),
+                            Ok(plaintext_bytes) => match String::from_utf8(plaintext_bytes) {
+                                Ok(plaintext) => match serde_json::from_str::<AppState>(&plaintext)
+                                {
+                                    Ok(state) => {
+                                        log::info!(
+                                            "Encrypted AppState loaded from {}",
+                                            path.display()
+                                        );
+                                        return Some(state);
+                                    }
+                                    Err(e) => log::warn!("Failed to parse decrypted state: {}", e),
+                                },
+                                Err(e) => {
+                                    log::warn!("Failed to convert decrypted bytes to string: {}", e)
                                 }
-                            }
+                            },
                             Err(e) => log::warn!("Failed to decrypt state file: {}", e),
                         }
                     }
@@ -268,11 +279,14 @@ impl AppState {
                     // This branch will be executed if deserialization to EncryptedState fails,
                     // which means it's likely an old unencrypted file.
                     if let Ok(state) = serde_json::from_str::<AppState>(&contents) {
-                        log::warn!("Loaded unencrypted AppState from {}. Please re-save to encrypt.", path.display());
+                        log::warn!(
+                            "Loaded unencrypted AppState from {}. Please re-save to encrypt.",
+                            path.display()
+                        );
                         return Some(state);
                     }
                     log::warn!("Failed to load state file as either encrypted or plaintext.");
-                },
+                }
                 Err(e) => log::warn!("Failed to read state file: {}", e),
             }
         }
@@ -309,13 +323,18 @@ mod tests {
         let path = directory.path().join("state.json");
         let key = StateKey::from([42; 32]);
         let mut state = AppState::new();
-        state.windows.insert("main".into(), WindowState::new("main"));
+        state
+            .windows
+            .insert("main".into(), WindowState::new("main"));
         state.focused_window_id = Some("main".into());
         let plaintext = serde_json::to_vec(&state).unwrap();
         let (ciphertext, nonce) = encrypt_data(&plaintext, &key).unwrap();
         write_encrypted_fixture(&path, &ciphertext, &nonce);
         let loaded = AppState::load_from_path(&path, &key).unwrap();
-        assert_eq!(serde_json::to_value(loaded).unwrap(), serde_json::to_value(state).unwrap());
+        assert_eq!(
+            serde_json::to_value(loaded).unwrap(),
+            serde_json::to_value(state).unwrap()
+        );
     }
 
     #[test]

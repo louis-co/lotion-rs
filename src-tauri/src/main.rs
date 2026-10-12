@@ -41,7 +41,10 @@ fn get_or_create_app_secret() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         }
     }
 
-    log::info!("Generating new application secret at {}", secret_path.display());
+    log::info!(
+        "Generating new application secret at {}",
+        secret_path.display()
+    );
     fs::create_dir_all(&secret_dir)?;
 
     let mut secret = vec![0u8; SECRET_LEN];
@@ -61,7 +64,10 @@ fn get_or_create_app_secret() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
 /// IPC. Notion's remote pages get no IPC access at all.
 fn is_trusted_origin<R: tauri::Runtime>(webview: &tauri::Webview<R>) -> bool {
     if webview.label() != MAIN_WINDOW {
-        log::warn!("Untrusted webview '{}' attempted to invoke a command.", webview.label());
+        log::warn!(
+            "Untrusted webview '{}' attempted to invoke a command.",
+            webview.label()
+        );
         return false;
     }
     match webview.url() {
@@ -118,7 +124,12 @@ async fn new_tab(webview: tauri::Webview<tauri::Wry>, app: tauri::AppHandle) {
 }
 
 #[tauri::command]
-fn move_tab(webview: tauri::Webview<tauri::Wry>, tab_id: String, to_index: usize, app: tauri::AppHandle) {
+fn move_tab(
+    webview: tauri::Webview<tauri::Wry>,
+    tab_id: String,
+    to_index: usize,
+    app: tauri::AppHandle,
+) {
     if is_trusted_origin(&webview) {
         wc::move_tab(&app, &tab_id, to_index);
     }
@@ -155,7 +166,8 @@ fn main() {
     env_logger::init();
     log::info!("Starting Lotion-rs...");
 
-    let app_secret = get_or_create_app_secret().expect("Failed to get or create application secret");
+    let app_secret =
+        get_or_create_app_secret().expect("Failed to get or create application secret");
     // Derive the state key once; every later save reuses it.
     let state_key = lotion_rs::state::derive_state_key(&app_secret);
 
@@ -210,7 +222,9 @@ fn main() {
             app.manage::<Arc<dyn lotion_rs::traits::PolicyEnforcer>>(policy);
             app.manage::<Arc<dyn lotion_rs::traits::ThemingEngine<tauri::Wry>>>(theming.clone());
             app.manage(theming);
-            app.manage::<Arc<dyn lotion_rs::traits::TabOrchestrator<tauri::Wry>>>(tab_manager.clone());
+            app.manage::<Arc<dyn lotion_rs::traits::TabOrchestrator<tauri::Wry>>>(
+                tab_manager.clone(),
+            );
             app.manage::<ConfigState>(Mutex::new(config));
             app.manage(app_state);
             app.manage(state_store);
@@ -228,7 +242,10 @@ fn main() {
                 .inner()
                 .clone();
 
-            let wc = lotion_rs::window_controller::WindowController::<tauri::Wry>::new(&handle, security_state)?;
+            let wc = lotion_rs::window_controller::WindowController::<tauri::Wry>::new(
+                &handle,
+                security_state,
+            )?;
             wc.setup_listeners(handle.clone());
             if let Err(e) = wc.setup_tabs(&handle) {
                 log::error!("Failed to set up tabs: {}", e);
@@ -245,7 +262,8 @@ fn main() {
                     .spawn(move || loop {
                         std::thread::sleep(Duration::from_secs(60));
                         let tabs = tab_manager.clone();
-                        let _ = timer_handle.run_on_main_thread(move || tabs.suspend_idle_tabs(max_idle));
+                        let _ = timer_handle
+                            .run_on_main_thread(move || tabs.suspend_idle_tabs(max_idle));
                     })?;
             }
 
