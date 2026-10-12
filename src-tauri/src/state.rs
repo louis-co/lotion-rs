@@ -13,6 +13,7 @@ use base64::{engine::general_purpose, Engine as _};
 
 // const APPLICATION_SECRET: &[u8] = b"lotion-rs-super-secret-key-that-is-long-and-random-for-pbkdf2";
 const PBKDF2_ITERATIONS: u32 = 100_000;
+const NONCE_LEN: usize = 12;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EncryptedState {
@@ -51,7 +52,7 @@ fn get_encryption_key(app_secret: &[u8]) -> Key<Aes256Gcm> {
 fn encrypt_data(data: &[u8], key: &Key<Aes256Gcm>) -> Result<(Vec<u8>, Vec<u8>), String> {
     let cipher = Aes256Gcm::new(key);
     let mut rng = StdRng::from_entropy();
-    let mut nonce_bytes = vec![0u8; 12]; // GCM nonces are 12 bytes
+    let mut nonce_bytes = vec![0u8; NONCE_LEN];
     rng.fill_bytes(&mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
 
@@ -62,6 +63,14 @@ fn encrypt_data(data: &[u8], key: &Key<Aes256Gcm>) -> Result<(Vec<u8>, Vec<u8>),
 }
 
 fn decrypt_data(encrypted_data: &[u8], nonce_bytes: &[u8], key: &Key<Aes256Gcm>) -> Result<Vec<u8>, String> {
+    // GenericArray::from_slice panics on the wrong length. Saved state is
+    // untrusted input: reject corruption so startup can fall back to fresh state.
+    if nonce_bytes.len() != NONCE_LEN {
+        return Err(format!(
+            "Invalid state nonce length: expected {NONCE_LEN}, got {}",
+            nonce_bytes.len()
+        ));
+    }
     let cipher = Aes256Gcm::new(key);
     let nonce = Nonce::from_slice(nonce_bytes);
 
@@ -214,8 +223,12 @@ impl AppState {
     /// Load application state from disk with a pre-derived key.
     pub fn load_with_key(key: &Key<Aes256Gcm>) -> Option<Self> {
         let path = Self::state_path();
+        Self::load_from_path(&path, key)
+    }
+
+    fn load_from_path(path: &std::path::Path, key: &Key<Aes256Gcm>) -> Option<Self> {
         if path.exists() {
-            match std::fs::read_to_string(&path) {
+            match std::fs::read_to_string(path) {
                 Ok(contents) => {
                     // Try to load as encrypted state first
                     if let Ok(encrypted_state) = serde_json::from_str::<EncryptedState>(&contents) {
@@ -264,5 +277,62 @@ impl AppState {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_encrypted_fixture(path: &std::path::Path, data: &[u8], nonce: &[u8]) {
+        let state = EncryptedState {
+            data: general_purpose::STANDARD.encode(data),
+            nonce: general_purpose::STANDARD.encode(nonce),
+        };
+        std::fs::write(path, serde_json::to_vec(&state).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn malformed_saved_nonces_are_rejected_without_panicking() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("state.json");
+        let key = StateKey::from([42; 32]);
+        for length in [0, 1, 11, 13, 64] {
+            write_encrypted_fixture(&path, &[0; 16], &vec![0; length]);
+            assert!(AppState::load_from_path(&path, &key).is_none());
+        }
+    }
+
+    #[test]
+    fn authenticated_encrypted_state_still_loads() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("state.json");
+        let key = StateKey::from([42; 32]);
+        let mut state = AppState::new();
+        state.windows.insert("main".into(), WindowState::new("main"));
+        state.focused_window_id = Some("main".into());
+        let plaintext = serde_json::to_vec(&state).unwrap();
+        let (ciphertext, nonce) = encrypt_data(&plaintext, &key).unwrap();
+        write_encrypted_fixture(&path, &ciphertext, &nonce);
+        let loaded = AppState::load_from_path(&path, &key).unwrap();
+        assert_eq!(serde_json::to_value(loaded).unwrap(), serde_json::to_value(state).unwrap());
+    }
+
+    #[test]
+    fn invalid_ciphertext_with_valid_nonce_is_rejected() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("state.json");
+        let key = StateKey::from([42; 32]);
+        write_encrypted_fixture(&path, &[0; 16], &[0; NONCE_LEN]);
+        assert!(AppState::load_from_path(&path, &key).is_none());
+    }
+
+    #[test]
+    fn legacy_plaintext_state_still_loads() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("state.json");
+        let state = AppState::new();
+        std::fs::write(&path, serde_json::to_vec(&state).unwrap()).unwrap();
+        assert!(AppState::load_from_path(&path, &StateKey::from([42; 32])).is_some());
     }
 }
