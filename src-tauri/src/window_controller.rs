@@ -5,8 +5,7 @@ use crate::tab_controller::{NOTION_HOME, TAB_STRIP_HEIGHT};
 use crate::traits::{SecuritySandbox, TabOrchestrator};
 use std::sync::Arc;
 use tauri::{
-    AppHandle, LogicalPosition, LogicalSize, Manager, Runtime, WebviewWindow, WebviewWindowBuilder,
-    Window,
+    AppHandle, LogicalPosition, LogicalSize, Manager, Runtime, Webview, WebviewWindowBuilder, Window,
 };
 
 pub const MAIN_WINDOW: &str = "main";
@@ -35,8 +34,10 @@ fn orchestrator<R: Runtime>(app: &AppHandle<R>) -> Option<Arc<dyn TabOrchestrato
         .map(|o| o.inner().clone())
 }
 
-fn strip<R: Runtime>(app: &AppHandle<R>) -> Option<WebviewWindow<R>> {
-    app.get_webview_window(MAIN_WINDOW)
+fn strip<R: Runtime>(app: &AppHandle<R>) -> Option<Webview<R>> {
+    // The strip shares its native window with the Notion child webviews.
+    // get_webview_window only succeeds for windows with a single webview.
+    app.get_webview(MAIN_WINDOW)
 }
 
 fn persist<R: Runtime>(app: &AppHandle<R>, update: impl FnOnce(&mut crate::state::AppState)) {
@@ -66,9 +67,11 @@ pub fn tabs_changed<R: Runtime>(app: &AppHandle<R>) {
         if let Ok(json) = serde_json::to_string(&tabs) {
             let _ = strip.eval(format!("window.__lotionRender && window.__lotionRender({json});"));
         }
+    }
+    if let Some(window) = app.get_window(MAIN_WINDOW) {
         if let Some(active) = tabs.iter().find(|t| t.is_active) {
             let title = if active.title.is_empty() { "Notion" } else { &active.title };
-            let _ = strip.set_title(title);
+            let _ = window.set_title(title);
         }
     }
 
@@ -556,4 +559,41 @@ fn record_bounds<R: Runtime>(app: &AppHandle<R>, window: &Window<R>, label: &str
             w.bounds.height = size.height;
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tab_strip_remains_addressable_with_notion_child_webviews() {
+        let app = tauri::test::mock_app();
+        let main = WebviewWindowBuilder::new(
+            &app,
+            MAIN_WINDOW,
+            tauri::WebviewUrl::App("index.html".into()),
+        )
+        .build()
+        .unwrap();
+        let window = main.as_ref().window();
+
+        for label in ["notion-tab-1", "notion-tab-2"] {
+            window
+                .add_child(
+                    tauri::webview::WebviewBuilder::new(
+                        label,
+                        tauri::WebviewUrl::External("https://app.notion.com/".parse().unwrap()),
+                    ),
+                    LogicalPosition::new(0.0, TAB_STRIP_HEIGHT),
+                    LogicalSize::new(800.0, 600.0),
+                )
+                .unwrap();
+        }
+
+        // Reproduce the framework condition that broke all live strip updates.
+        assert!(app.get_webview_window(MAIN_WINDOW).is_none());
+        let strip = strip(app.handle()).expect("strip must survive child tab creation");
+        assert_eq!(strip.label(), MAIN_WINDOW);
+        assert_eq!(strip.window().label(), MAIN_WINDOW);
+    }
 }
