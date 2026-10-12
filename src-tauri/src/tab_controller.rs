@@ -6,7 +6,25 @@ use std::time::Instant;
 use tauri::webview::{DownloadEvent, NewWindowResponse, PageLoadEvent, Webview};
 use tauri::{AppHandle, Manager, Runtime, Url, WebviewBuilder, WebviewUrl};
 
-pub const NOTION_HOME: &str = "https://www.notion.so";
+// notion.so now redirects to the marketing site even with an existing session.
+// Use the application origin for startup, fresh tabs, and the Home action.
+pub const NOTION_HOME: &str = "https://app.notion.com/";
+
+fn notion_home_url(url: &str) -> &str {
+    let Ok(parsed) = Url::parse(url) else {
+        return url;
+    };
+    if parsed.scheme() == "https"
+        && matches!(parsed.host_str(), Some("notion.so" | "www.notion.so" | "notion.com" | "www.notion.com"))
+        && parsed.path() == "/"
+        && parsed.query().is_none()
+        && parsed.fragment().is_none()
+    {
+        NOTION_HOME
+    } else {
+        url
+    }
+}
 
 /// Height of the native tab strip (logical px), matching Notion desktop's
 /// 36px tab bar. Notion content sits below it.
@@ -38,6 +56,9 @@ impl<R: Runtime> TabController<R> {
         lazy: bool,
         _litebox: Arc<LiteBox>,
     ) -> tauri::Result<Self> {
+        // Also migrate default-home URLs retained by older saved/closed tabs.
+        // Real page URLs, views, and public notion.site pages keep their URL.
+        let url_str = notion_home_url(url_str);
         let policy = app.state::<Arc<dyn PolicyEnforcer>>().inner().clone();
 
         // Zero-Trust Enforcement: Validate URL before creation
@@ -402,4 +423,38 @@ pub fn create_secure_webview_builder<R: Runtime>(
             }
             NewWindowResponse::Deny
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_home_tabs_reopen_at_the_application_origin() {
+        for url in [
+            "https://notion.so",
+            "https://www.notion.so/",
+            "https://notion.com/",
+            "https://www.notion.com/",
+        ] {
+            assert_eq!(notion_home_url(url), "https://app.notion.com/");
+        }
+    }
+
+    #[test]
+    fn home_migration_preserves_pages_views_and_untrusted_urls() {
+        for url in [
+            "https://app.notion.com/p/example-page",
+            "https://www.notion.so/page-123?v=view-456",
+            "https://notion.com/product",
+            "https://notion.so/?v=view-456",
+            "https://notion.so/#page",
+            "https://acme.notion.site/",
+            "https://notion.so.evil.com/",
+            "http://notion.so/",
+            "not a URL",
+        ] {
+            assert_eq!(notion_home_url(url), url);
+        }
+    }
 }
